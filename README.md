@@ -55,7 +55,6 @@ After installation, your Odoo instance will be:
 - Ready for custom modules in `/<instance>/custom/addons`
 
 Access your Odoo via the URL shown at the end of the script (e.g., `https://your-domain.com` or `http://SERVER_IP:PORT`).
-#######################################
 
 ## 🗑️ Odoo Instance Deletion Script (`delete_odoo.sh`)
 
