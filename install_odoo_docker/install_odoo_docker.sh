@@ -140,7 +140,7 @@ services:
       - POSTGRES_USER=odoo
       - POSTGRES_PASSWORD=odoo
     volumes:
-      - ./db-/var/lib/postgresql/data
+      - ./db-data:/var/lib/postgresql/data
     restart: unless-stopped
     networks:
       - odoo-net
@@ -154,7 +154,7 @@ EOF
     cat > "$INSTANCE_DIR/config/odoo.conf" <<EOF
 [options]
 admin_passwd = $ADMIN_PASS
-http_port = 8069
+http_port = $ODOO_PORT
 logfile = /var/log/odoo/odoo-server.log
 addons_path = /mnt/extra-addons,/etc/odoo/addons
 data_dir = /var/lib/odoo
