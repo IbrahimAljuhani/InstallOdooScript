@@ -80,7 +80,7 @@ choose_odoo_version() {
         2) echo "18.0" ;;
         3) echo "17.0" ;;
         4) echo "16.0" ;;
-        *) print_error "Invalid choice."; ;;
+        *) print_error "Invalid choice." ;;
     esac
 }
 
