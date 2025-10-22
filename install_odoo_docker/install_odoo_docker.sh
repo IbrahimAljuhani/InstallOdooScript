@@ -9,7 +9,7 @@ set -euo pipefail
 
 LOGFILE="$HOME/install_odoo_docker.log"
 INSTALL_DIR="$HOME/odoo"
-SECRETS_FILE="/root/odoo-docker-secrets.txt"
+SECRETS_FILE="$HOME/.odoo-docker-secrets.txt"
 
 # Colors
 GREEN='\033[0;32m'
