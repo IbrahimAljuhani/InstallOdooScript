@@ -23,6 +23,11 @@ print_warn()  { echo -e "${YELLOW}[‼ WARN]${NC} $1"; }
 print_error() { echo -e "${RED}[✖ ERROR]${NC} $1"; exit 1; }
 print_step()  { echo -e "${CYAN}==> $1${NC}"; }
 
+# Prevent running as root
+if [[ $EUID -eq 0 ]]; then
+  print_error "This script must NOT be run with sudo or as root.\nPlease run as your regular user (who is in the 'docker' group)."
+fi
+
 # Check prerequisites
 check_prerequisites() {
     local missing=()
@@ -33,12 +38,14 @@ check_prerequisites() {
     if ! docker compose version &>/dev/null; then
         missing+=("Docker Compose")
     fi
+    if ! command -v openssl &>/dev/null; then
+        missing+=("openssl")
+    fi
 
     if [ ${#missing[@]} -ne 0 ]; then
-        print_error "Missing required components: ${missing[*]}"
-        echo -e "\nPlease install them first using:"
-        echo "  https://github.com/IbrahimAljuhani/docker_installs"
-        exit 1
+        print_error "Missing required components: ${missing[*]}
+Please install them first using:
+  https://github.com/IbrahimAljuhani/docker_installs"
     fi
 
     # Optional: check for NPM and Portainer
@@ -100,7 +107,7 @@ main() {
     ADMIN_PASS=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1)
     echo "$(date '+%Y-%m-%d %H:%M:%S'): Instance '$INSTANCE_NAME' admin password: $ADMIN_PASS" >> "$SECRETS_FILE"
     chmod 600 "$SECRETS_FILE"
-    print_info "Admin password saved to $SECRETS_FILE (root-only access)."
+    print_info "Admin password saved to $SECRETS_FILE (accessible only by you)."
 
     # Generate docker-compose.yml
     cat > "$INSTANCE_DIR/docker-compose.yml" <<EOF
@@ -162,7 +169,13 @@ EOF
         print_error "Failed to start Odoo container. Check $LOGFILE"
     fi
 
+    # Get server IP safely
     SERVER_IP=$(hostname -I | awk '{print $1}')
+    if [[ -z "$SERVER_IP" ]]; then
+        SERVER_IP="127.0.0.1"
+        print_warn "Could not detect public IP. Using localhost."
+    fi
+
     print_info "✅ Odoo instance '$INSTANCE_NAME' is running!"
     echo
     echo "Instance Details:"
