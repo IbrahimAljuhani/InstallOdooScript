@@ -38,7 +38,7 @@ If you haven’t already, install Docker and Docker Compose:
 ```bash
 curl -fsSL -o install_docker_NPM.sh https://raw.githubusercontent.com/IbrahimAljuhani/docker_installs/main/install_docker_NPM.sh
 chmod +x install_docker_NPM.sh
-./install_docker_NPM.sh
+sudo ./install_docker_NPM.sh
 ```
 
 ✅ This also installs **NGINX Proxy Manager** and **Portainer-CE** (optional but recommended for production).
@@ -50,7 +50,7 @@ chmod +x install_docker_NPM.sh
 ```bash
 curl -fsSL -o install_odoo_docker.sh https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/main/install_odoo_docker/install_odoo_docker.sh
 chmod +x install_odoo_docker.sh
-./install_odoo_docker.sh
+sudo ./install_odoo_docker.sh
 ```
 
 You’ll be guided through:
