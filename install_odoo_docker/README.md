@@ -111,18 +111,6 @@ docker compose stop        # Stop instance
 docker compose rm          # Remove containers (data preserved)
 ```
 
-### 🔄 Upgrade Odoo
-
-To upgrade Odoo:
-1. Edit `docker-compose.yml`
-2. Change the Odoo image version
-3. Run:
-   ```bash
-   docker compose up -d
-   ```
-
----
-
 ## 🌐 Reverse Proxy & SSL (Recommended)
 
 If you installed **NGINX Proxy Manager** (via `install_docker_NPM.sh`):
@@ -161,9 +149,8 @@ This project is licensed under the **MIT License** — see [LICENSE](LICENSE) fo
 **Ibrahim Aljuhani**  
 GitHub: [@IbrahimAljuhani](https://github.com/IbrahimAljuhani)
 
-🔗 [https://github.com/IbrahimAljuhani](https://github.com/IbrahimAljuhani)
-
 ---
+
 
 <!--
 Tags: Odoo, Docker, Installer, Bash, DevOps, Ubuntu, Debian, NGINX Proxy Manager, Odoo Docker Compose
