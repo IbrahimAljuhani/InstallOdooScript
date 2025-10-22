@@ -133,7 +133,7 @@ services:
       - POSTGRES_USER=odoo
       - POSTGRES_PASSWORD=odoo
     volumes:
-      - ./db-/var/lib/postgresql/data
+      - ./db-data:/var/lib/postgresql/data
     restart: unless-stopped
     networks:
       - odoo-net
