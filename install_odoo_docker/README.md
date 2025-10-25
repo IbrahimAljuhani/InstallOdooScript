@@ -1,7 +1,7 @@
 # 🐳 Odoo Docker Installer
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Odoo Versions](https://img.shields.io/badge/Odoo-16%20|%2017%20|%2018%20|%2019-blueviolet)]()
+[![Odoo Versions](https://img.shields.io/badge/Odoo-17%20|%2018%20|%2019-blueviolet)]()
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg?logo=docker)]()
 
 A smart, interactive Bash script to **install Odoo in Docker** with full multi-instance support, automatic configuration, and secure password generation — designed for **Ubuntu/Debian** systems.
@@ -18,7 +18,7 @@ Perfect for developers, agencies, and businesses who need to run **multiple isol
 - **Multi-instance support** – run multiple Odoo versions side-by-side (e.g., `odoo-prod`, `odoo-dev`)
 - **Automatic setup** – creates users, directories, config files, and Docker Compose stack
 - **Secure by default** – generates a random **admin password** and saves it to `/root/odoo-docker-secrets.txt`
-- **Version flexibility** – supports **Odoo 16.0, 17.0, 18.0, and 19.0**
+- **Version flexibility** – supports **Odoo 17.0, 18.0, and 19.0**
 - **Isolated data** – each instance has its own:
   - PostgreSQL database (in container)
   - Filestore
