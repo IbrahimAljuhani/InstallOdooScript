@@ -174,7 +174,7 @@ choose_odoo_version() {
   echo -e "${GREEN}2) 18.0${NC}"
   echo -e "${GREEN}3) 17.0${NC}"
   echo -e "${GREEN}4) 16.0${NC}"
-  read -p "Enter your choice (1-3): " version_choice
+  read -p "Enter your choice (1-4): " version_choice
   case $version_choice in
     1) OE_VERSION="19.0" ;;
     2) OE_VERSION="18.0" ;;
