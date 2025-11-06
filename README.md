@@ -1,6 +1,6 @@
 # InstallOdooScript
 
-A robust, production-ready Bash script to install multiple Odoo instances (v16–v19) on Ubuntu 22.04 — with Nginx, Let's Encrypt SSL, and PostgreSQL 15.
+A robust, production-ready Bash script to install multiple Odoo instances (v16–v19) on Ubuntu 22.04+ — with Nginx, Let's Encrypt SSL, and PostgreSQL 15.
 
 🔗 **View on GitHub**: [install_odoo.sh](https://github.com/IbrahimAljuhani/InstallOdooScript/blob/main/install_odoo.sh)  
 📥 **Download raw**: [install_odoo.sh (raw)](https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/main/install_odoo.sh)
@@ -44,8 +44,7 @@ https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/main/install
    - Optionally enable **Nginx reverse proxy** for production use
    - If Nginx is enabled, you can also set up **free SSL via Let's Encrypt**
 
-> ⚠️ **Important**:  
-> - The script **only supports Ubuntu 22.04**.  
+> ⚠️ **Important**:    
 > - Must be run as **root** or with **sudo**.  
 > - If an instance name already exists, you’ll be offered to **delete it (with optional backup)** or choose a new name.
 
