@@ -1,6 +1,6 @@
 #!/bin/bash
 ################################################################################
-# Odoo Multi-Instance Installation Script for Ubuntu 22.04
+# Odoo Multi-Instance Installation Script for Ubuntu 22.04+
 # Final Unified Version with Nginx, Let's Encrypt & Backup
 # Author: Ibrahim Aljuhani
 ################################################################################
@@ -65,19 +65,25 @@ while check_instance_exists "$OE_USER"; do
     1)
       echo -e "${RED}────────────────────────────────────────────────────${NC}"
       echo -e "${RED}⚠  WARNING: This action is IRREVERSIBLE!${NC}"
-      echo -e "${RED}   - All files, logs, and configurations will be deleted.${NC}"
+      echo -e "${RED}   - All files, logs, configs, and DB will be deleted.${NC}"
       read -p "   Create automatic backup before deletion? (y/N): " BACKUP_CHOICE
       BACKUP_CHOICE=$(echo "$BACKUP_CHOICE" | tr '[:upper:]' '[:lower:]')
       if [[ "$BACKUP_CHOICE" == "y" || "$BACKUP_CHOICE" == "yes" ]]; then
         BACKUP_DIR="/root/odoo-backups"
         sudo mkdir -p "$BACKUP_DIR"
         BACKUP_FILE="$BACKUP_DIR/${OE_USER}_$(date +%Y%m%d_%H%M%S).tar.gz"
-        print_step "Creating backup: $BACKUP_FILE"
+        print_step "Creating file backup: $BACKUP_FILE"
         sudo tar -czf "$BACKUP_FILE" \
           "/$OE_USER" \
           "/etc/${OE_USER}-server.conf" \
           "/var/log/$OE_USER" 2>/dev/null || true
-        print_info "✅ Backup saved to: $BACKUP_FILE"
+
+        # ✅ NEW: Backup PostgreSQL database
+        DB_BACKUP_FILE="$BACKUP_DIR/${OE_USER}_db_$(date +%Y%m%d_%H%M%S).sql"
+        print_step "Creating database backup: $DB_BACKUP_FILE"
+        sudo -u postgres pg_dump "$OE_USER" > "$DB_BACKUP_FILE" 2>/dev/null || true
+
+        print_info "✅ Full backup saved to: $BACKUP_DIR"
       fi
       read -p "   Also delete the PostgreSQL database and user? (y/N): " DROP_DB_CHOICE
       echo -e "${RED}────────────────────────────────────────────────────${NC}"
@@ -168,7 +174,7 @@ choose_odoo_version() {
   echo -e "${GREEN}2) 18.0${NC}"
   echo -e "${GREEN}3) 17.0${NC}"
   echo -e "${GREEN}4) 16.0${NC}"
-  read -p "Enter your choice (1-4): " version_choice
+  read -p "Enter your choice (1-3): " version_choice
   case $version_choice in
     1) OE_VERSION="19.0" ;;
     2) OE_VERSION="18.0" ;;
@@ -182,8 +188,8 @@ choose_odoo_version() {
 #-------------------------------#
 #      System Preparation       #
 #-------------------------------#
-print_step "Checking required tools: wget git gpg curl"
-for cmd in wget git gpg curl; do
+print_step "Checking required tools: wget git gpg curl bc"
+for cmd in wget git gpg curl bc; do
   if ! command -v "$cmd" &> /dev/null; then
     print_error "$cmd is required but not installed."
   fi
@@ -191,7 +197,14 @@ done
 
 print_step "Checking Ubuntu version"
 UBUNTU_VERSION=$(lsb_release -r -s 2>/dev/null || echo "unknown")
-[ "$UBUNTU_VERSION" != "22.04" ] && print_error "This script supports Ubuntu 22.04 only."
+if [[ "$UBUNTU_VERSION" == "unknown" ]]; then
+  print_error "Unable to detect Ubuntu version. Make sure 'lsb-release' is installed."
+fi
+if (( $(echo "$UBUNTU_VERSION >= 22.04" | bc -l) )); then
+  print_info "Ubuntu version $UBUNTU_VERSION is supported."
+else
+  print_error "This script requires Ubuntu 22.04 or newer. Detected version: $UBUNTU_VERSION"
+fi
 
 print_step "Updating system packages"
 sudo apt update -y
@@ -205,8 +218,7 @@ print_step "Installing required system packages"
 sudo apt install -y curl wget gnupg apt-transport-https git build-essential \
   libxslt-dev libzip-dev libldap2-dev libsasl2-dev libjpeg-dev libpng-dev \
   gdebi libpq-dev fonts-dejavu-core fonts-font-awesome fonts-roboto-unhinted \
-  adduser lsb-base vim python3 python3-dev python3-venv python3-wheel
-
+  adduser lsb-base vim python3 python3-dev python3-venv python3-wheel lsb-release bc
 print_info "System packages installed."
 
 #-------------------------------#
@@ -222,7 +234,7 @@ print_info "Node.js 18 and rtlcss installed."
 #     Install wkhtmltopdf        #
 #-------------------------------#
 if [ "$INSTALL_WKHTMLTOPDF" == "True" ]; then
-  print_step "Installing official wkhtmltopdf 0.12.6.1-3 for Ubuntu 22.04"
+  print_step "Installing official wkhtmltopdf 0.12.6.1-3 for Ubuntu 22.04+"
   WKHTML_DEB="/tmp/wkhtmltox_${OE_USER}.deb"
   WKHTML_URL="https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.jammy_amd64.deb"
   wget -q "$WKHTML_URL" -O "$WKHTML_DEB" || print_error "Failed to download wkhtmltopdf from official source"
@@ -321,7 +333,7 @@ print_step "Downloading Odoo requirements"
 REQUIREMENTS_FILE="/tmp/odoo_reqs_${OE_USER}.txt"
 REQUIREMENTS_URL="https://github.com/odoo/odoo/raw/${OE_VERSION}/requirements.txt"
 wget -q "$REQUIREMENTS_URL" -O "$REQUIREMENTS_FILE" || print_error "Failed to download requirements.txt"
-if [[ "$OE_VERSION" =~ ^1[6-9]\.0$ ]]; then
+if [[ "$OE_VERSION" =~ ^1[6-8]\.0$ ]]; then
   print_warn "Detected Odoo $OE_VERSION — removing 'gevent' from requirements.txt"
   sed -i '/gevent/d' "$REQUIREMENTS_FILE"
   sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install -r "$REQUIREMENTS_FILE" || print_warn "Some packages failed"
@@ -401,6 +413,17 @@ if [[ "$NGINX_CHOICE" == "y" || "$NGINX_CHOICE" == "yes" ]]; then
     print_info "Nginx is already installed."
   fi
 
+  # ✅ Verify www-data user exists
+  if ! id www-data &>/dev/null; then
+    print_error "Nginx user 'www-data' not found. Nginx may not be installed correctly."
+  fi
+
+  # ✅ Set global client_max_body_size in nginx.conf (survives Certbot)
+  if ! grep -q "client_max_body_size 1G;" /etc/nginx/nginx.conf; then
+    sudo sed -i '/http {/a \    client_max_body_size 1G;' /etc/nginx/nginx.conf
+    print_info "✅ Set global client_max_body_size = 1G in /etc/nginx/nginx.conf"
+  fi
+
   # Ensure ACME challenge directory exists
   sudo mkdir -p /var/www/certbot/.well-known/acme-challenge
   sudo chown -R www-data:www-data /var/www/certbot
@@ -450,6 +473,9 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Real-IP \$remote_addr;
+        proxy_connect_timeout 600;
+        proxy_send_timeout 600;
+        proxy_read_timeout 600;
     }
 
     location /longpolling {
@@ -460,6 +486,7 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
+        proxy_read_timeout 3600;
     }
 }
 EOF
@@ -504,7 +531,7 @@ EOF
     sudo ufw deny "$OE_PORT" 2>/dev/null || true
     print_info "🔒 Internal port $OE_PORT closed for security."
   else
-    # Still close port if Nginx is used (optional but recommended)
+    # Still close port if Nginx is used
     sudo ufw deny "$OE_PORT" 2>/dev/null || true
     print_info "🔒 Internal port $OE_PORT closed (Nginx is handling traffic)."
   fi
