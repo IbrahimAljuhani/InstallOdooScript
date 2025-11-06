@@ -222,13 +222,13 @@ sudo apt install -y curl wget gnupg apt-transport-https git build-essential \
 print_info "System packages installed."
 
 #-------------------------------#
-#     Install Node.js 18        #
+#     Install Node.js 20 LTS    #
 #-------------------------------#
-print_step "Installing Node.js 18 from NodeSource"
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash - || print_error "Failed to add NodeSource repo"
-sudo apt install -y nodejs || print_error "Failed to install Node.js 18"
+print_step "Installing Node.js 20 LTS from NodeSource"
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - || print_error "Failed to add NodeSource repo"
+sudo apt install -y nodejs || print_error "Failed to install Node.js 20"
 sudo npm install -g rtlcss
-print_info "Node.js 18 and rtlcss installed."
+print_info "Node.js 20 LTS and rtlcss installed."
 
 #-------------------------------#
 #     Install wkhtmltopdf        #
