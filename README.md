@@ -16,7 +16,7 @@ https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/main/install
 
 - Supports Odoo **16.0, 17.0, 18.0, and 19.0**
 - Creates isolated system users and PostgreSQL databases per instance
-- Installs **PostgreSQL 15**, **Node.js 18**, and **wkhtmltopdf** (official .deb)
+- Installs **PostgreSQL 15**, **Node.js 20**, and **wkhtmltopdf** (official .deb)
 - Sets up **Python virtual environment** with proper dependencies (including `gevent` fix for v16–v19)
 - Configures **systemd service** for auto-start and monitoring
 - Optional **Nginx reverse proxy** with security hardening
