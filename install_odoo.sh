@@ -78,7 +78,7 @@ while check_instance_exists "$OE_USER"; do
           "/etc/${OE_USER}-server.conf" \
           "/var/log/$OE_USER" 2>/dev/null || true
 
-        # ✅ NEW: Backup PostgreSQL database
+        # ✅ Backup PostgreSQL database
         DB_BACKUP_FILE="$BACKUP_DIR/${OE_USER}_db_$(date +%Y%m%d_%H%M%S).sql"
         print_step "Creating database backup: $DB_BACKUP_FILE"
         sudo -u postgres pg_dump "$OE_USER" > "$DB_BACKUP_FILE" 2>/dev/null || true
@@ -413,12 +413,12 @@ if [[ "$NGINX_CHOICE" == "y" || "$NGINX_CHOICE" == "yes" ]]; then
     print_info "Nginx is already installed."
   fi
 
-  # ✅ Verify www-data user exists
+  # Verify www-data user exists
   if ! id www-data &>/dev/null; then
     print_error "Nginx user 'www-data' not found. Nginx may not be installed correctly."
   fi
 
-  # ✅ Set global client_max_body_size in nginx.conf (survives Certbot)
+  # Set global client_max_body_size in nginx.conf (survives Certbot)
   if ! grep -q "client_max_body_size 1G;" /etc/nginx/nginx.conf; then
     sudo sed -i '/http {/a \    client_max_body_size 1G;' /etc/nginx/nginx.conf
     print_info "✅ Set global client_max_body_size = 1G in /etc/nginx/nginx.conf"
@@ -435,7 +435,15 @@ if [[ "$NGINX_CHOICE" == "y" || "$NGINX_CHOICE" == "yes" ]]; then
   NGINX_ENABLED="/etc/nginx/sites-enabled/${OE_USER}"
 
   print_step "Creating Nginx configuration for $OE_USER..."
+
+  # ✅ FULL WEBSOCKET SUPPORT per nginx.org/docs
   sudo tee "$NGINX_SITE" > /dev/null <<EOF
+# Websocket support per nginx.org/en/docs/http/websocket.html
+map \$http_upgrade \$connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 upstream odoo_${OE_USER} {
     server 127.0.0.1:${OE_PORT};
 }
@@ -467,20 +475,31 @@ server {
         proxy_pass http://odoo_${OE_USER};
     }
 
+    # ✅ FULL WEBSOCKET SUPPORT FOR KITCHEN SCREEN, LIVE CHAT, IOT
     location / {
         proxy_pass http://odoo_${OE_USER};
-        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-Host \$host;
+
+        # Essential for WebSockets (per nginx.org)
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+
+        # Prevent timeout on long-lived connections
         proxy_connect_timeout 600;
         proxy_send_timeout 600;
-        proxy_read_timeout 600;
+        proxy_read_timeout 3600;
     }
 
+    # Longpolling for POS notifications
     location /longpolling {
         proxy_pass http://odoo_${OE_USER}_longpolling;
-        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_http_version 1.1;
