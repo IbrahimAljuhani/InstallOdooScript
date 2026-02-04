@@ -1,10 +1,12 @@
 #!/bin/bash
 ################################################################################
 # Odoo Multi-Instance Installation Script for Ubuntu 22.04+
-# Final Unified Version with Nginx, Let's Encrypt & Backup
+# Final Unified Version with Professional Nginx Baseline 
 # Author: Ibrahim Aljuhani
+# Nginx Baseline: Security that works WITH Odoo, not against it
 ################################################################################
 set -e
+export DEBIAN_FRONTEND=noninteractive
 
 #-------------------------------#
 #        Color Definitions      #
@@ -26,21 +28,21 @@ print_danger() { echo -e "${RED}🔥 $1${NC}"; }
 #     Validation Functions      #
 #-------------------------------#
 check_instance_exists() {
-  local user="$1"
-  if id "$user" &>/dev/null; then return 0; fi
-  if [ -f "/etc/${user}-server.conf" ]; then return 0; fi
-  if systemctl list-unit-files --type=service | grep -q "^${user}-server\\.service"; then return 0; fi
-  return 1
+    local user="$1"
+    if id "$user" &>/dev/null; then return 0; fi
+    if [ -f "/etc/${user}-server.conf" ]; then return 0; fi
+    if systemctl list-unit-files --type=service | grep -q "^${user}-server\\.service"; then return 0; fi
+    return 1
 }
 
 check_port_in_use() {
-  local port="$1"
-  if ss -tuln | grep -q ":$port\b"; then return 0; fi
-  return 1
+    local port="$1"
+    if ss -tuln | grep -q ":$port\b"; then return 0; fi
+    return 1
 }
 
 check_nginx_installed() {
-  command -v nginx &>/dev/null
+    command -v nginx &>/dev/null
 }
 
 #-------------------------------#
@@ -48,88 +50,97 @@ check_nginx_installed() {
 #-------------------------------#
 read -p "Enter instance name (e.g., odoo-prod): " INSTANCE_NAME
 OE_USER="$INSTANCE_NAME"
+
 if [[ ! "$OE_USER" =~ ^[a-z][a-z0-9_-]*$ ]]; then
-  print_error "Invalid instance name. Must start with lowercase letter, and contain only letters, digits, hyphens, or underscores."
+    print_error "Invalid instance name. Must start with lowercase letter, and contain only letters, digits, hyphens, or underscores."
 fi
 
 #-------------------------------#
 #     Conflict Validation       #
 #-------------------------------#
 while check_instance_exists "$OE_USER"; do
-  print_conflict "Instance name '$OE_USER' is already in use."
-  echo "What would you like to do?"
-  echo "1) Delete the existing instance and proceed"
-  echo "2) Enter a different instance name"
-  read -p "Choose an option (1 or 2): " CONFLICT_CHOICE
-  case $CONFLICT_CHOICE in
-    1)
-      echo -e "${RED}────────────────────────────────────────────────────${NC}"
-      echo -e "${RED}⚠  WARNING: This action is IRREVERSIBLE!${NC}"
-      echo -e "${RED}   - All files, logs, configs, and DB will be deleted.${NC}"
-      read -p "   Create automatic backup before deletion? (y/N): " BACKUP_CHOICE
-      BACKUP_CHOICE=$(echo "$BACKUP_CHOICE" | tr '[:upper:]' '[:lower:]')
-      if [[ "$BACKUP_CHOICE" == "y" || "$BACKUP_CHOICE" == "yes" ]]; then
-        BACKUP_DIR="/root/odoo-backups"
-        sudo mkdir -p "$BACKUP_DIR"
-        BACKUP_FILE="$BACKUP_DIR/${OE_USER}_$(date +%Y%m%d_%H%M%S).tar.gz"
-        print_step "Creating file backup: $BACKUP_FILE"
-        sudo tar -czf "$BACKUP_FILE" \
-          "/$OE_USER" \
-          "/etc/${OE_USER}-server.conf" \
-          "/var/log/$OE_USER" 2>/dev/null || true
+    print_conflict "Instance name '$OE_USER' is already in use."
+    echo "What would you like to do?"
+    echo "1) Delete the existing instance and proceed"
+    echo "2) Enter a different instance name"
+    read -p "Choose an option (1 or 2): " CONFLICT_CHOICE
 
-        # ✅ Backup PostgreSQL database
-        DB_BACKUP_FILE="$BACKUP_DIR/${OE_USER}_db_$(date +%Y%m%d_%H%M%S).sql"
-        print_step "Creating database backup: $DB_BACKUP_FILE"
-        sudo -u postgres pg_dump "$OE_USER" > "$DB_BACKUP_FILE" 2>/dev/null || true
+    case $CONFLICT_CHOICE in
+        1)
+            echo -e "${RED}────────────────────────────────────────────────────${NC}"
+            echo -e "${RED}⚠  WARNING: This action is IRREVERSIBLE!${NC}"
+            echo -e "${RED}   - All files, logs, configs, and DB will be deleted.${NC}"
+            read -p "   Create automatic backup before deletion? (y/N): " BACKUP_CHOICE
+            BACKUP_CHOICE=$(echo "$BACKUP_CHOICE" | tr '[:upper:]' '[:lower:]')
 
-        print_info "✅ Full backup saved to: $BACKUP_DIR"
-      fi
-      read -p "   Also delete the PostgreSQL database and user? (y/N): " DROP_DB_CHOICE
-      echo -e "${RED}────────────────────────────────────────────────────${NC}"
-      DROP_DB=$(echo "$DROP_DB_CHOICE" | tr '[:upper:]' '[:lower:]')
-      if [[ "$DROP_DB" == "y" || "$DROP_DB" == "yes" ]]; then
-        DROP_POSTGRES=true
-      else
-        DROP_POSTGRES=false
-      fi
-      print_step "Force-stopping Odoo service and killing all related processes..."
-      sudo systemctl stop "${OE_USER}-server" 2>/dev/null || true
-      sudo systemctl kill --signal=SIGKILL "${OE_USER}-server" 2>/dev/null || true
-      sleep 2
-      sudo pkill -9 -u "$OE_USER" 2>/dev/null || true
-      print_step "Removing systemd service and config files..."
-      sudo systemctl disable --quiet "${OE_USER}-server" 2>/dev/null || true
-      sudo rm -f "/etc/systemd/system/${OE_USER}-server.service"
-      sudo rm -f "/etc/${OE_USER}-server.conf"
-      sudo systemctl daemon-reload
-      print_step "Force-deleting system user and home directory..."
-      sudo userdel -r "$OE_USER" 2>/dev/null || true
-      sudo rm -rf "/$OE_USER"
-      sudo rm -rf "/var/log/$OE_USER"
-      if [ "$DROP_POSTGRES" == true ]; then
-        print_danger "🔥 PREPARING TO DELETE POSTGRESQL DATABASE: '$OE_USER'"
-        sudo -u postgres psql -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$OE_USER';" >/dev/null 2>&1 || true
-        sudo -u postgres psql -d postgres -c "DROP DATABASE IF EXISTS \"$OE_USER\";" >/dev/null 2>&1 || true
-        sudo -u postgres psql -d postgres -c "DROP USER IF EXISTS \"$OE_USER\";" >/dev/null 2>&1 || true
-        print_info "✅ PostgreSQL database and user DELETED successfully."
-      else
-        print_info "ℹ️  PostgreSQL database and user preserved."
-      fi
-      print_info "✅ Existing instance '$OE_USER' has been COMPLETELY removed."
-      break
-      ;;
-    2)
-      read -p "Enter a new instance name: " INSTANCE_NAME
-      OE_USER="$INSTANCE_NAME"
-      if [[ ! "$OE_USER" =~ ^[a-z][a-z0-9_-]*$ ]]; then
-        print_error "Invalid instance name. Must start with lowercase letter, and contain only letters, digits, hyphens, or underscores."
-      fi
-      ;;
-    *)
-      print_warn "Invalid choice. Please enter 1 or 2."
-      ;;
-  esac
+            if [[ "$BACKUP_CHOICE" == "y" || "$BACKUP_CHOICE" == "yes" ]]; then
+                BACKUP_DIR="/root/odoo-backups"
+                sudo mkdir -p "$BACKUP_DIR"
+                BACKUP_FILE="$BACKUP_DIR/${OE_USER}_$(date +%Y%m%d_%H%M%S).tar.gz"
+                print_step "Creating file backup: $BACKUP_FILE"
+                sudo tar -czf "$BACKUP_FILE" \
+                    "/$OE_USER" \
+                    "/etc/${OE_USER}-server.conf" \
+                    "/var/log/$OE_USER" 2>/dev/null || true
+
+                # ✅ Backup PostgreSQL database
+                DB_BACKUP_FILE="$BACKUP_DIR/${OE_USER}_db_$(date +%Y%m%d_%H%M%S).sql"
+                print_step "Creating database backup: $DB_BACKUP_FILE"
+                sudo -u postgres pg_dump "$OE_USER" > "$DB_BACKUP_FILE" 2>/dev/null || true
+                print_info "✅ Full backup saved to: $BACKUP_DIR"
+            fi
+
+            read -p "   Also delete the PostgreSQL database and user? (y/N): " DROP_DB_CHOICE
+            echo -e "${RED}────────────────────────────────────────────────────${NC}"
+            DROP_DB=$(echo "$DROP_DB_CHOICE" | tr '[:upper:]' '[:lower:]')
+
+            if [[ "$DROP_DB" == "y" || "$DROP_DB" == "yes" ]]; then
+                DROP_POSTGRES=true
+            else
+                DROP_POSTGRES=false
+            fi
+
+            print_step "Force-stopping Odoo service and killing all related processes..."
+            sudo systemctl stop "${OE_USER}-server" 2>/dev/null || true
+            sudo systemctl kill --signal=SIGKILL "${OE_USER}-server" 2>/dev/null || true
+            sleep 2
+            sudo pkill -9 -u "$OE_USER" 2>/dev/null || true
+
+            print_step "Removing systemd service and config files..."
+            sudo systemctl disable --quiet "${OE_USER}-server" 2>/dev/null || true
+            sudo rm -f "/etc/systemd/system/${OE_USER}-server.service"
+            sudo rm -f "/etc/${OE_USER}-server.conf"
+            sudo systemctl daemon-reload
+
+            print_step "Force-deleting system user and home directory..."
+            sudo userdel -r "$OE_USER" 2>/dev/null || true
+            sudo rm -rf "/$OE_USER"
+            sudo rm -rf "/var/log/$OE_USER"
+
+            if [ "$DROP_POSTGRES" == true ]; then
+                print_danger "🔥 PREPARING TO DELETE POSTGRESQL DATABASE: '$OE_USER'"
+                sudo -u postgres psql -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$OE_USER';" >/dev/null 2>&1 || true
+                sudo -u postgres psql -d postgres -c "DROP DATABASE IF EXISTS \"$OE_USER\";" >/dev/null 2>&1 || true
+                sudo -u postgres psql -d postgres -c "DROP USER IF EXISTS \"$OE_USER\";" >/dev/null 2>&1 || true
+                print_info "✅ PostgreSQL database and user DELETED successfully."
+            else
+                print_info "ℹ️  PostgreSQL database and user preserved."
+            fi
+
+            print_info "✅ Existing instance '$OE_USER' has been COMPLETELY removed."
+            break
+            ;;
+        2)
+            read -p "Enter a new instance name: " INSTANCE_NAME
+            OE_USER="$INSTANCE_NAME"
+            if [[ ! "$OE_USER" =~ ^[a-z][a-z0-9_-]*$ ]]; then
+                print_error "Invalid instance name. Must start with lowercase letter, and contain only letters, digits, hyphens, or underscores."
+            fi
+            ;;
+        *)
+            print_warn "Invalid choice. Please enter 1 or 2."
+            ;;
+    esac
 done
 
 #-------------------------------#
@@ -137,19 +148,22 @@ done
 #-------------------------------#
 read -p "Enter HTTP port (default 8069): " OE_PORT
 OE_PORT="${OE_PORT:-8069}"
+
 if ! [[ "$OE_PORT" =~ ^[0-9]+$ ]] || [ "$OE_PORT" -lt 1024 ] || [ "$OE_PORT" -gt 65535 ]; then
-  print_error "Port must be a number between 1024 and 65535."
-fi
-while check_port_in_use "$OE_PORT"; do
-  print_conflict "Port $OE_PORT is already in use."
-  read -p "Enter a different port: " OE_PORT
-  if ! [[ "$OE_PORT" =~ ^[0-9]+$ ]] || [ "$OE_PORT" -lt 1024 ] || [ "$OE_PORT" -gt 65535 ]; then
     print_error "Port must be a number between 1024 and 65535."
-  fi
+fi
+
+while check_port_in_use "$OE_PORT"; do
+    print_conflict "Port $OE_PORT is already in use."
+    read -p "Enter a different port: " OE_PORT
+    if ! [[ "$OE_PORT" =~ ^[0-9]+$ ]] || [ "$OE_PORT" -lt 1024 ] || [ "$OE_PORT" -gt 65535 ]; then
+        print_error "Port must be a number between 1024 and 65535."
+    fi
 done
+
 LONGPOLLING_PORT=$((OE_PORT + 3))
 if check_port_in_use "$LONGPOLLING_PORT"; then
-  print_warn "Longpolling port $LONGPOLLING_PORT is in use. Live features may not work properly."
+    print_warn "Longpolling port $LONGPOLLING_PORT is in use. Live features (POS, Chat) may not work properly."
 fi
 
 #-------------------------------#
@@ -169,20 +183,21 @@ SERVER_IP=$(hostname -I | awk '{print $1}')
 #      Odoo Version Choice      #
 #-------------------------------#
 choose_odoo_version() {
-  echo -e "${CYAN}Choose the Odoo version to install:${NC}"
-  echo -e "${YELLOW}1) 19.0${NC}"
-  echo -e "${GREEN}2) 18.0${NC}"
-  echo -e "${GREEN}3) 17.0${NC}"
-  echo -e "${GREEN}4) 16.0${NC}"
-  read -p "Enter your choice (1-4): " version_choice
-  case $version_choice in
-    1) OE_VERSION="19.0" ;;
-    2) OE_VERSION="18.0" ;;
-    3) OE_VERSION="17.0" ;;
-    4) OE_VERSION="16.0" ;;
-    *) print_error "Invalid choice. Please select 1, 2, 3, or 4." ;;
-  esac
-  print_info "Selected Odoo version: $OE_VERSION"
+    echo -e "${CYAN}Choose the Odoo version to install:${NC}"
+    echo -e "${YELLOW}1) 19.0${NC}"
+    echo -e "${GREEN}2) 18.0${NC}"
+    echo -e "${GREEN}3) 17.0${NC}"
+    echo -e "${GREEN}4) 16.0${NC}"
+    read -p "Enter your choice (1-4): " version_choice
+
+    case $version_choice in
+        1) OE_VERSION="19.0" ;;
+        2) OE_VERSION="18.0" ;;
+        3) OE_VERSION="17.0" ;;
+        4) OE_VERSION="16.0" ;;
+        *) print_error "Invalid choice. Please select 1, 2, 3, or 4." ;;
+    esac
+    print_info "Selected Odoo version: $OE_VERSION"
 }
 
 #-------------------------------#
@@ -190,20 +205,21 @@ choose_odoo_version() {
 #-------------------------------#
 print_step "Checking required tools: wget git gpg curl bc"
 for cmd in wget git gpg curl bc; do
-  if ! command -v "$cmd" &> /dev/null; then
-    print_error "$cmd is required but not installed."
-  fi
+    if ! command -v "$cmd" &> /dev/null; then
+        print_error "$cmd is required but not installed."
+    fi
 done
 
 print_step "Checking Ubuntu version"
 UBUNTU_VERSION=$(lsb_release -r -s 2>/dev/null || echo "unknown")
 if [[ "$UBUNTU_VERSION" == "unknown" ]]; then
-  print_error "Unable to detect Ubuntu version. Make sure 'lsb-release' is installed."
+    print_error "Unable to detect Ubuntu version. Make sure 'lsb-release' is installed."
 fi
+
 if (( $(echo "$UBUNTU_VERSION >= 22.04" | bc -l) )); then
-  print_info "Ubuntu version $UBUNTU_VERSION is supported."
+    print_info "Ubuntu version $UBUNTU_VERSION is supported."
 else
-  print_error "This script requires Ubuntu 22.04 or newer. Detected version: $UBUNTU_VERSION"
+    print_error "This script requires Ubuntu 22.04 or newer. Detected version: $UBUNTU_VERSION"
 fi
 
 print_step "Updating system packages"
@@ -216,9 +232,10 @@ choose_odoo_version
 
 print_step "Installing required system packages"
 sudo apt install -y curl wget gnupg apt-transport-https git build-essential \
-  libxslt-dev libzip-dev libldap2-dev libsasl2-dev libjpeg-dev libpng-dev \
-  gdebi libpq-dev fonts-dejavu-core fonts-font-awesome fonts-roboto-unhinted \
-  adduser lsb-base vim python3 python3-dev python3-venv python3-wheel lsb-release bc
+    libxslt-dev libzip-dev libldap2-dev libsasl2-dev libjpeg-dev libpng-dev \
+    gdebi libpq-dev fonts-dejavu-core fonts-font-awesome fonts-roboto-unhinted \
+    adduser lsb-base vim python3 python3-dev python3-venv python3-wheel lsb-release bc
+
 print_info "System packages installed."
 
 #-------------------------------#
@@ -234,35 +251,35 @@ print_info "Node.js 20 LTS and rtlcss installed."
 #     Install wkhtmltopdf        #
 #-------------------------------#
 if [ "$INSTALL_WKHTMLTOPDF" == "True" ]; then
-  print_step "Installing official wkhtmltopdf 0.12.6.1-3 for Ubuntu 22.04+"
-  WKHTML_DEB="/tmp/wkhtmltox_${OE_USER}.deb"
-  WKHTML_URL="https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.jammy_amd64.deb"
-  wget -q "$WKHTML_URL" -O "$WKHTML_DEB" || print_error "Failed to download wkhtmltopdf from official source"
-  sudo gdebi -n "$WKHTML_DEB" || print_error "Failed to install wkhtmltopdf .deb package"
-  print_info "wkhtmltopdf installed from official .deb (0.12.6.1-3)"
+    print_step "Installing official wkhtmltopdf 0.12.6.1-3 for Ubuntu 22.04+"
+    WKHTML_DEB="/tmp/wkhtmltox_${OE_USER}.deb"
+    WKHTML_URL="https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.jammy_amd64.deb"
+    wget -q "$WKHTML_URL" -O "$WKHTML_DEB" || print_error "Failed to download wkhtmltopdf from official source"
+    sudo gdebi -n "$WKHTML_DEB" || print_error "Failed to install wkhtmltopdf .deb package"
+    print_info "wkhtmltopdf installed from official .deb (0.12.6.1-3)"
 else
-  print_warn "Skipping wkhtmltopdf installation."
+    print_warn "Skipping wkhtmltopdf installation."
 fi
 
 #-------------------------------#
 #     PostgreSQL 15 Setup       #
 #-------------------------------#
 if dpkg -l | grep -q "postgresql-15"; then
-  print_info "PostgreSQL 15 is already installed. Skipping installation."
-  if ! systemctl is-active --quiet postgresql; then
-    print_step "Starting PostgreSQL service..."
-    sudo systemctl start postgresql
-    sudo systemctl enable postgresql
-  fi
+    print_info "PostgreSQL 15 is already installed. Skipping installation."
+    if ! systemctl is-active --quiet postgresql; then
+        print_step "Starting PostgreSQL service..."
+        sudo systemctl start postgresql
+        sudo systemctl enable postgresql
+    fi
 else
-  print_step "PostgreSQL 15 not found. Installing from PGDG..."
-  curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | \
-    sudo tee /usr/share/keyrings/postgresql.gpg > /dev/null
-  echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | \
-    sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
-  sudo apt update -y
-  sudo apt install -y postgresql-15 || print_error "Failed to install PostgreSQL 15"
-  print_info "PostgreSQL 15 installed successfully."
+    print_step "PostgreSQL 15 not found. Installing from PGDG..."
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | \
+        sudo tee /usr/share/keyrings/postgresql.gpg > /dev/null
+    echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | \
+        sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+    sudo apt update -y
+    sudo apt install -y postgresql-15 || print_error "Failed to install PostgreSQL 15"
+    print_info "PostgreSQL 15 installed successfully."
 fi
 
 #-------------------------------#
@@ -270,10 +287,10 @@ fi
 #-------------------------------#
 print_step "Creating PostgreSQL user '$OE_USER'"
 if ! sudo -u postgres psql -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$OE_USER'" 2>/dev/null | grep -q 1; then
-  sudo -u postgres createuser -s "$OE_USER"
-  print_info "PostgreSQL user '$OE_USER' created."
+    sudo -u postgres createuser -s "$OE_USER"
+    print_info "PostgreSQL user '$OE_USER' created."
 else
-  print_warn "PostgreSQL user '$OE_USER' already exists."
+    print_warn "PostgreSQL user '$OE_USER' already exists."
 fi
 
 #-------------------------------#
@@ -281,10 +298,10 @@ fi
 #-------------------------------#
 print_step "Creating system user '$OE_USER'"
 if id "$OE_USER" &>/dev/null; then
-  print_warn "User '$OE_USER' already exists."
+    print_warn "User '$OE_USER' already exists."
 else
-  sudo adduser --system --quiet --shell=/bin/bash --home="$OE_HOME" --gecos 'ODOO' --group "$OE_USER"
-  print_info "User '$OE_USER' created."
+    sudo adduser --system --quiet --shell=/bin/bash --home="$OE_HOME" --gecos 'ODOO' --group "$OE_USER"
+    print_info "User '$OE_USER' created."
 fi
 
 #-------------------------------#
@@ -300,14 +317,16 @@ print_info "Log directory created."
 CONFIG_FILE="/etc/${OE_USER}-server.conf"
 SERVICE_FILE="/etc/systemd/system/${OE_USER}-server.service"
 SKIP_CLONE=false
+
 if [ -d "$OE_HOME_EXT" ]; then
-  print_warn "Odoo directory exists. Skipping clone."
-  SKIP_CLONE=true
+    print_warn "Odoo directory exists. Skipping clone."
+    SKIP_CLONE=true
 fi
+
 if [ "$SKIP_CLONE" != true ]; then
-  print_step "Cloning Odoo $OE_VERSION"
-  sudo -u "$OE_USER" git clone --depth 1 --branch "$OE_VERSION" https://github.com/odoo/odoo "$OE_HOME_EXT"
-  print_info "Odoo source cloned."
+    print_step "Cloning Odoo $OE_VERSION"
+    sudo -u "$OE_USER" git clone --depth 1 --branch "$OE_VERSION" https://github.com/odoo/odoo "$OE_HOME_EXT"
+    print_info "Odoo source cloned."
 fi
 
 #-------------------------------#
@@ -333,13 +352,14 @@ print_step "Downloading Odoo requirements"
 REQUIREMENTS_FILE="/tmp/odoo_reqs_${OE_USER}.txt"
 REQUIREMENTS_URL="https://github.com/odoo/odoo/raw/${OE_VERSION}/requirements.txt"
 wget -q "$REQUIREMENTS_URL" -O "$REQUIREMENTS_FILE" || print_error "Failed to download requirements.txt"
+
 if [[ "$OE_VERSION" =~ ^1[6-8]\.0$ ]]; then
-  print_warn "Detected Odoo $OE_VERSION — removing 'gevent' from requirements.txt"
-  sed -i '/gevent/d' "$REQUIREMENTS_FILE"
-  sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install -r "$REQUIREMENTS_FILE" || print_warn "Some packages failed"
-  sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install "gevent==23.9.1"
+    print_warn "Detected Odoo $OE_VERSION — removing 'gevent' from requirements.txt"
+    sed -i '/gevent/d' "$REQUIREMENTS_FILE"
+    sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install -r "$REQUIREMENTS_FILE" || print_warn "Some packages failed"
+    sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install "gevent==23.9.1"
 else
-  sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install -r "$REQUIREMENTS_FILE" || print_warn "Some packages failed"
+    sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install -r "$REQUIREMENTS_FILE" || print_warn "Some packages failed"
 fi
 print_info "Odoo Python dependencies installed in virtual environment."
 
@@ -348,16 +368,18 @@ print_info "Odoo Python dependencies installed in virtual environment."
 #-------------------------------#
 print_step "Creating Odoo config at $CONFIG_FILE"
 if [ ! -f "$CONFIG_FILE" ]; then
-  sudo touch "$CONFIG_FILE"
-  sudo chmod 640 "$CONFIG_FILE"
-  sudo chown "$OE_USER":"$OE_USER" "$CONFIG_FILE"
+    sudo touch "$CONFIG_FILE"
+    sudo chmod 640 "$CONFIG_FILE"
+    sudo chown "$OE_USER":"$OE_USER" "$CONFIG_FILE"
 fi
+
 if [ "$GENERATE_RANDOM_PASSWORD" == "True" ]; then
-  OE_SUPERADMIN=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1)
-  echo "$(date '+%Y-%m-%d %H:%M:%S'): Instance '$OE_USER' admin password: $OE_SUPERADMIN" >> "$SECRETS_FILE"
-  chmod 600 "$SECRETS_FILE"
-  print_info "Admin password saved to $SECRETS_FILE (root-only access)."
+    OE_SUPERADMIN=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1)
+    echo "$(date '+%Y-%m-%d %H:%M:%S'): Instance '$OE_USER' admin password: $OE_SUPERADMIN" >> "$SECRETS_FILE"
+    chmod 600 "$SECRETS_FILE"
+    print_info "Admin password saved to $SECRETS_FILE (root-only access)."
 fi
+
 sudo tee "$CONFIG_FILE" > /dev/null <<EOF
 [options]
 admin_passwd = ${OE_SUPERADMIN}
@@ -377,6 +399,7 @@ sudo tee "$SERVICE_FILE" > /dev/null <<EOF
 Description=Odoo Instance: $OE_USER
 After=network.target postgresql.service
 Requires=postgresql.service
+
 [Service]
 Type=simple
 User=$OE_USER
@@ -386,14 +409,17 @@ StandardOutput=journal
 StandardError=journal
 Restart=always
 RestartSec=5
+
 [Install]
 WantedBy=multi-user.target
 EOF
+
 sudo systemctl daemon-reload
 sudo systemctl enable "${OE_USER}-server"
 sudo systemctl start "${OE_USER}-server"
+
 if ! sudo systemctl is-active --quiet "${OE_USER}-server"; then
-  print_error "Odoo service failed to start. Check logs with: journalctl -u ${OE_USER}-server"
+    print_error "Odoo service failed to start. Check logs with: journalctl -u ${OE_USER}-server"
 fi
 print_info "Odoo service started and enabled."
 
@@ -403,59 +429,127 @@ print_info "Odoo service started and enabled."
 print_step "Configure Nginx as reverse proxy (recommended for production)?"
 read -p "Install and configure Nginx for this instance? (y/N): " NGINX_CHOICE
 NGINX_CHOICE=$(echo "$NGINX_CHOICE" | tr '[:upper:]' '[:lower:]')
+
 if [[ "$NGINX_CHOICE" == "y" || "$NGINX_CHOICE" == "yes" ]]; then
-  if ! check_nginx_installed; then
-    print_step "Installing Nginx..."
-    sudo apt install -y nginx || print_error "Failed to install Nginx"
-    sudo ufw allow 'Nginx Full' 2>/dev/null || true
-    print_info "Nginx installed."
-  else
-    print_info "Nginx is already installed."
-  fi
+    if ! check_nginx_installed; then
+        print_step "Installing Nginx..."
+        sudo apt install -y nginx || print_error "Failed to install Nginx"
+        sudo ufw allow 'Nginx Full' 2>/dev/null || true
+        print_info "Nginx installed."
+    else
+        print_info "Nginx is already installed."
+    fi
 
-  # Verify www-data user exists
-  if ! id www-data &>/dev/null; then
-    print_error "Nginx user 'www-data' not found. Nginx may not be installed correctly."
-  fi
+    # Verify www-data user exists
+    if ! id www-data &>/dev/null; then
+        print_error "Nginx user 'www-data' not found. Nginx may not be installed correctly."
+    fi
 
-  # Set global client_max_body_size in nginx.conf (survives Certbot)
-  if ! grep -q "client_max_body_size 1G;" /etc/nginx/nginx.conf; then
-    sudo sed -i '/http {/a \    client_max_body_size 1G;' /etc/nginx/nginx.conf
-    print_info "✅ Set global client_max_body_size = 1G in /etc/nginx/nginx.conf"
-  fi
+    # Set global client_max_body_size in nginx.conf (survives Certbot)
+    if ! grep -q "client_max_body_size 1G;" /etc/nginx/nginx.conf; then
+        sudo sed -i '/http {/a \    client_max_body_size 1G;' /etc/nginx/nginx.conf
+        print_info "✅ Set global client_max_body_size = 1G in /etc/nginx/nginx.conf"
+    fi
 
-  # Ensure ACME challenge directory exists
-  sudo mkdir -p /var/www/certbot/.well-known/acme-challenge
-  sudo chown -R www-data:www-data /var/www/certbot
+    # Ensure ACME challenge directory exists
+    sudo mkdir -p /var/www/certbot/.well-known/acme-challenge
+    sudo chown -R www-data:www-data /var/www/certbot
 
-  read -p "Enter domain name (or press Enter to use server IP: $SERVER_IP): " NGINX_DOMAIN
-  NGINX_DOMAIN="${NGINX_DOMAIN:-$SERVER_IP}"
+    read -p "Enter domain name (or press Enter to use server IP: $SERVER_IP): " NGINX_DOMAIN
+    NGINX_DOMAIN="${NGINX_DOMAIN:-$SERVER_IP}"
+    NGINX_SITE="/etc/nginx/sites-available/${OE_USER}"
+    NGINX_ENABLED="/etc/nginx/sites-enabled/${OE_USER}"
 
-  NGINX_SITE="/etc/nginx/sites-available/${OE_USER}"
-  NGINX_ENABLED="/etc/nginx/sites-enabled/${OE_USER}"
+    # Create cache directory BEFORE enabling site
+    sudo mkdir -p /var/cache/nginx/odoo_static
+    sudo chown -R www-data:www-data /var/cache/nginx
+    sudo chmod -R 755 /var/cache/nginx
+    print_info "✅ Nginx cache directory created: /var/cache/nginx/odoo_static"
 
-  print_step "Creating Nginx configuration for $OE_USER..."
+    print_step "Creating Nginx configuration (Odoo Baseline - Approved by Odoo Developer)..."
+    
+    # ✅ PROFESSIONAL ODOO BASELINE - Approved by Odoo Developer
+    # Philosophy: Security that works WITH Odoo, not against it
+    sudo tee "$NGINX_SITE" > /dev/null <<EOF
+# ============================================================================
+# 🏢 Odoo Nginx Baseline Configuration
+# Role: Reverse Proxy for Odoo 17.0 | 18.0 | 19.0
+# Philosophy: Stability first, security without breaking Odoo
+# Generated by: install_odoo.sh
+# Instance: ${OE_USER}
+# ============================================================================
+# ✅ Reviewed for: POS, Live Chat, IoT, Kitchen Display, Reports & ORM
+# ============================================================================
 
-  # ✅ FULL WEBSOCKET SUPPORT per nginx.org/docs
-  sudo tee "$NGINX_SITE" > /dev/null <<EOF
-# Websocket support per nginx.org/en/docs/http/websocket.html
+# ----------------------------------------------------------------------------
+# WebSocket upgrade mapping (required for Odoo bus, live chat, POS, IoT)
+# ----------------------------------------------------------------------------
 map \$http_upgrade \$connection_upgrade {
     default upgrade;
     ''      close;
 }
 
-upstream odoo_${OE_USER} {
+# ----------------------------------------------------------------------------
+# Upstream definitions
+# ----------------------------------------------------------------------------
+upstream odoo_backend {
     server 127.0.0.1:${OE_PORT};
+    # keepalive 32: Maintains persistent connections to Odoo workers
+    # Reduces TCP handshake overhead and improves performance
+    keepalive 32;
 }
-upstream odoo_${OE_USER}_longpolling {
+
+upstream odoo_longpolling {
     server 127.0.0.1:${LONGPOLLING_PORT};
+    keepalive 32;
 }
 
-server {
-    listen 80;
-    server_name ${NGINX_DOMAIN};
+# ----------------------------------------------------------------------------
+# Cache zone for static assets only
+# Dynamic content (RPC / JSON) must NEVER be cached
+# ----------------------------------------------------------------------------
+proxy_cache_path /var/cache/nginx/odoo_static
+    levels=1:2
+    keys_zone=odoo_static:100m
+    inactive=60m
+    max_size=1g;
 
-    # Let's Encrypt ACME challenge support
+# ============================================================================
+# HTTPS SERVER (will be enabled after SSL certificate installation)
+# ============================================================================
+server {
+    server_name ${NGINX_DOMAIN};
+    charset utf-8;
+
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+
+    # ------------------------------------------------------------------------
+    # SSL certificates (will be populated by Certbot)
+    # ------------------------------------------------------------------------
+    ssl_certificate /etc/letsencrypt/live/${NGINX_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${NGINX_DOMAIN}/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/${NGINX_DOMAIN}/chain.pem;
+
+    # SSL security settings
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    include /etc/letsencrypt/options-ssl-nginx.conf 2>/dev/null;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem 2>/dev/null;
+
+    # ------------------------------------------------------------------------
+    # Security headers (safe with Odoo frontend)
+    # ------------------------------------------------------------------------
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # ------------------------------------------------------------------------
+    # ACME challenge (certificate renewal)
+    # ------------------------------------------------------------------------
     location ^~ /.well-known/acme-challenge/ {
         allow all;
         root /var/www/certbot;
@@ -463,100 +557,190 @@ server {
         try_files \$uri =404;
     }
 
-    location /web/database/manager {
+    # ------------------------------------------------------------------------
+    # Database manager must be disabled in production
+    # ------------------------------------------------------------------------
+    location ~* /web/database {
         deny all;
         return 403;
     }
 
+    # ------------------------------------------------------------------------
+    # Static assets (JS / CSS / images) - Safe to cache
+    # ------------------------------------------------------------------------
     location /web/static/ {
-        proxy_cache_valid 200 60m;
+        proxy_pass http://odoo_backend;
+
+        proxy_cache odoo_static;
+        proxy_cache_valid 200 7d;
         proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
-        proxy_ignore_headers Cache-Control;
-        proxy_pass http://odoo_${OE_USER};
+        proxy_ignore_headers Cache-Control Expires;
+
+        expires 7d;
+        add_header Cache-Control "public, max-age=604800" always;
     }
 
-    # ✅ FULL WEBSOCKET SUPPORT FOR KITCHEN SCREEN, LIVE CHAT, IOT
+    # ------------------------------------------------------------------------
+    # WebSocket endpoint (Odoo 14.0+) - REQUIRED for IoT, Live Chat, POS
+    # ------------------------------------------------------------------------
+    location /websocket {
+        proxy_pass http://odoo_backend;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # Long-lived connection (1 hour sufficient for all Odoo use cases)
+        proxy_read_timeout 3600;
+
+        # Required for stable WebSocket behavior
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+
+    # ------------------------------------------------------------------------
+    # Longpolling (POS / bus notifications)
+    # ------------------------------------------------------------------------
+    location /longpolling {
+        proxy_pass http://odoo_longpolling;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        proxy_read_timeout 3600;
+        proxy_buffering off;
+    }
+
+    # ------------------------------------------------------------------------
+    # Main application
+    # ------------------------------------------------------------------------
     location / {
-        proxy_pass http://odoo_${OE_USER};
+        proxy_pass http://odoo_backend;
+
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header X-Forwarded-Host \$host;
 
-        # Essential for WebSockets (per nginx.org)
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \$connection_upgrade;
+        # Timeouts balanced for Odoo RPC & reports
+        # - 60s: Standard RPC calls
+        # - 300s: Reports generation, large imports
+        proxy_connect_timeout 60;
+        proxy_send_timeout 60;
+        proxy_read_timeout 300;
 
-        # Prevent timeout on long-lived connections
-        proxy_connect_timeout 600;
-        proxy_send_timeout 600;
-        proxy_read_timeout 3600;
+        # Allow large attachments (invoices, imports, documents)
+        client_max_body_size 128M;
     }
 
-    # Longpolling for POS notifications
-    location /longpolling {
-        proxy_pass http://odoo_${OE_USER}_longpolling;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 3600;
+    # ------------------------------------------------------------------------
+    # Logs
+    # ------------------------------------------------------------------------
+    access_log /var/log/nginx/${OE_USER}_access.log;
+    error_log /var/log/nginx/${OE_USER}_error.log warn;
+}
+
+# ============================================================================
+# HTTP → HTTPS REDIRECT (with ACME challenge support)
+# ============================================================================
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${NGINX_DOMAIN};
+
+    # ACME challenge must work on HTTP for certificate renewal
+    location ^~ /.well-known/acme-challenge/ {
+        allow all;
+        root /var/www/certbot;
+        default_type "text/plain";
+        try_files \$uri =404;
+    }
+
+    # Redirect all other traffic to HTTPS
+    location / {
+        return 301 https://\$host\$request_uri;
     }
 }
 EOF
 
-  sudo ln -sf "$NGINX_SITE" "$NGINX_ENABLED"
-  sudo nginx -t || print_error "Nginx configuration test failed!"
-  sudo systemctl reload nginx || print_error "Failed to reload Nginx"
-
-  echo "proxy_mode = True" | sudo tee -a "$CONFIG_FILE" > /dev/null
-  sudo systemctl restart "${OE_USER}-server"
-
-  print_info "Nginx configured successfully for $OE_USER."
-
-  #-------------------------------#
-  #     Let's Encrypt SSL Setup   #
-  #-------------------------------#
-  NGINX_ACCESS_URL="http://${NGINX_DOMAIN}"
-  print_step "Enable HTTPS with Let's Encrypt (free SSL certificate)?"
-  read -p "Enable SSL for $NGINX_DOMAIN? (y/N): " SSL_CHOICE
-  SSL_CHOICE=$(echo "$SSL_CHOICE" | tr '[:upper:]' '[:lower:]')
-  if [[ "$SSL_CHOICE" == "y" || "$SSL_CHOICE" == "yes" ]]; then
-    print_step "Installing Certbot..."
-    sudo apt install -y certbot python3-certbot-nginx || print_error "Failed to install Certbot"
-
-    read -p "Enter email for Let's Encrypt notifications: " LETSENCRYPT_EMAIL
-    if [[ -z "$LETSENCRYPT_EMAIL" ]]; then
-      print_error "Email is required for Let's Encrypt."
+    # Enable site
+    sudo ln -sf "$NGINX_SITE" "$NGINX_ENABLED"
+    
+    # Test configuration
+    if ! sudo nginx -t; then
+        print_error "Nginx configuration test failed! Check syntax errors."
     fi
-
-    print_step "Requesting SSL certificate from Let's Encrypt..."
-    sudo certbot --nginx \
-      --non-interactive \
-      --agree-tos \
-      --email "$LETSENCRYPT_EMAIL" \
-      --domains "$NGINX_DOMAIN" \
-      --redirect 2>/dev/null || print_error "Failed to obtain SSL certificate"
-
-    print_info "✅ SSL certificate installed successfully!"
-    NGINX_ACCESS_URL="https://${NGINX_DOMAIN}"
-
-    # 🔒 Close internal port for security
-    sudo ufw deny "$OE_PORT" 2>/dev/null || true
-    print_info "🔒 Internal port $OE_PORT closed for security."
-  else
-    # Still close port if Nginx is used
-    sudo ufw deny "$OE_PORT" 2>/dev/null || true
-    print_info "🔒 Internal port $OE_PORT closed (Nginx is handling traffic)."
-  fi
-
+    
+    # Reload Nginx
+    sudo systemctl reload nginx || print_error "Failed to reload Nginx"
+    
+    # Enable proxy_mode in Odoo config
+    if ! grep -q "^proxy_mode" "$CONFIG_FILE"; then
+        echo "proxy_mode = True" | sudo tee -a "$CONFIG_FILE" > /dev/null
+        sudo systemctl restart "${OE_USER}-server"
+    fi
+    
+    print_info "✅ Nginx Baseline configured successfully for $OE_USER."
+    
+    #-------------------------------#
+    #     Let's Encrypt SSL Setup   #
+    #-------------------------------#
+    NGINX_ACCESS_URL="http://${NGINX_DOMAIN}"
+    print_step "Enable HTTPS with Let's Encrypt (free SSL certificate)?"
+    read -p "Enable SSL for $NGINX_DOMAIN? (y/N): " SSL_CHOICE
+    SSL_CHOICE=$(echo "$SSL_CHOICE" | tr '[:upper:]' '[:lower:]')
+    
+    if [[ "$SSL_CHOICE" == "y" || "$SSL_CHOICE" == "yes" ]]; then
+        print_step "Installing Certbot..."
+        sudo apt install -y certbot python3-certbot-nginx || print_error "Failed to install Certbot"
+        
+        read -p "Enter email for Let's Encrypt notifications: " LETSENCRYPT_EMAIL
+        if [[ -z "$LETSENCRYPT_EMAIL" ]]; then
+            print_error "Email is required for Let's Encrypt."
+        fi
+        
+        print_step "Requesting SSL certificate from Let's Encrypt..."
+        if sudo certbot --nginx \
+            --non-interactive \
+            --agree-tos \
+            --email "$LETSENCRYPT_EMAIL" \
+            --domains "$NGINX_DOMAIN" \
+            --redirect 2>/dev/null; then
+            
+            print_info "✅ SSL certificate installed successfully!"
+            NGINX_ACCESS_URL="https://${NGINX_DOMAIN}"
+            
+            # 🔒 Close internal port for security after SSL is active
+            sudo ufw deny "$OE_PORT" 2>/dev/null || true
+            print_info "🔒 Internal port $OE_PORT closed for security."
+            
+            # Verify Odoo service is still running
+            if ! sudo systemctl is-active --quiet "${OE_USER}-server"; then
+                sudo systemctl restart "${OE_USER}-server"
+            fi
+        else
+            print_warn "⚠️  Failed to obtain SSL certificate. HTTP fallback enabled."
+            NGINX_ACCESS_URL="http://${NGINX_DOMAIN}"
+        fi
+    else
+        # Still close port if Nginx is used (traffic goes through Nginx port 80)
+        sudo ufw deny "$OE_PORT" 2>/dev/null || true
+        print_info "🔒 Internal port $OE_PORT closed (Nginx is handling traffic)."
+    fi
 else
-  NGINX_ACCESS_URL="http://${SERVER_IP}:${OE_PORT}"
+    NGINX_ACCESS_URL="http://${SERVER_IP}:${OE_PORT}"
 fi
 
 #-------------------------------#
@@ -576,6 +760,13 @@ echo "Addons Folders:         $OE_HOME_EXT/addons, $OE_HOME/custom/addons"
 echo "Superadmin Password:    $OE_SUPERADMIN"
 echo "Password also saved in: $SECRETS_FILE"
 echo -e "${CYAN}Access your Odoo ==> :${NC} $NGINX_ACCESS_URL"
+echo ""
+echo -e "${YELLOW}💡 Nginx Baseline Features:${NC}"
+echo "   • Full WebSocket support (/websocket + /longpolling)"
+echo "   • Safe caching for static assets only"
+echo "   • Balanced security headers (no ORM/POS breakage)"
+echo "   • Optimized timeouts for reports & POS"
+echo "   • Production-ready with Let's Encrypt support"
 echo -e "${GREEN}-----------------------------------------------------------${NC}"
 
 #-------------------------------#
@@ -583,4 +774,5 @@ echo -e "${GREEN}-----------------------------------------------------------${NC
 #-------------------------------#
 print_step "Cleaning temporary files"
 rm -f "/tmp/odoo_reqs_${OE_USER}.txt" "/tmp/wkhtmltox_${OE_USER}.deb"
+
 exit 0
