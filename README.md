@@ -2,15 +2,15 @@
 
 A robust, production-ready Bash script to install multiple Odoo instances (v16–v19) on Ubuntu 22.04+ — with Nginx, Let's Encrypt SSL, and PostgreSQL 15.
 
-🔗 **View on GitHub**: [install_odoo.sh](https://github.com/IbrahimAljuhani/InstallOdooScript/blob/main/install_odoo.sh)  
-📥 **Download raw**: [install_odoo.sh (raw)](https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/main/install_odoo.sh)
+🔗 **View on GitHub**: [install_odoo.sh](https://github.com/IbrahimAljuhani/InstallOdooScript/blob/install_odoo_PNB/install_odoo.sh)  
+📥 **Download raw**: [install_odoo.sh (raw)](https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/refs/heads/install_odoo_PNB/install_odoo.sh)
 -------------------------------------------
 # Install Odoo Script
 
 A fully automated, production-grade Bash script to deploy **multiple isolated Odoo instances** (versions 16.0 to 19.0) on **Ubuntu 22.04**.
 
 🔗 **Script URL**:  
-https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/main/install_odoo.sh
+https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/refs/heads/install_odoo_PNB/install_odoo.sh
 
 ## ✨ Features
 
@@ -30,7 +30,7 @@ https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/main/install
 
 1. **Download the script**:
    ```bash
-   wget https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/main/install_odoo.sh
+   wget https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/refs/heads/install_odoo_PNB/install_odoo.sh
 2. **Make it executable:**
    ```bash
    chmod +x install_odoo.sh
