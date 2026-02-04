@@ -468,8 +468,9 @@ if [[ "$NGINX_CHOICE" == "y" || "$NGINX_CHOICE" == "yes" ]]; then
 
     print_step "Creating Nginx configuration (Odoo Baseline - Approved by Odoo Developer)..."
     
-    # ✅ PROFESSIONAL ODOO BASELINE - Approved by Odoo Developer
-    # Philosophy: Security that works WITH Odoo, not against it
+    # ✅ PROFESSIONAL ODOO BASELINE - CORRECTED FOR SYNTAX VALIDITY
+    # Fixes: Removed shell redirections (2>/dev/null) from include directives
+    #        SSL includes commented initially (Certbot will enable them)
     sudo tee "$NGINX_SITE" > /dev/null <<EOF
 # ============================================================================
 # 🏢 Odoo Nginx Baseline Configuration
@@ -515,7 +516,7 @@ proxy_cache_path /var/cache/nginx/odoo_static
     max_size=1g;
 
 # ============================================================================
-# HTTPS SERVER (will be enabled after SSL certificate installation)
+# HTTPS SERVER (SSL directives will be populated by Certbot)
 # ============================================================================
 server {
     server_name ${NGINX_DOMAIN};
@@ -527,16 +528,17 @@ server {
     # ------------------------------------------------------------------------
     # SSL certificates (will be populated by Certbot)
     # ------------------------------------------------------------------------
-    ssl_certificate /etc/letsencrypt/live/${NGINX_DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${NGINX_DOMAIN}/privkey.pem;
-    ssl_trusted_certificate /etc/letsencrypt/live/${NGINX_DOMAIN}/chain.pem;
+    # Certbot will uncomment and populate these lines after certificate issuance
+    # ssl_certificate /etc/letsencrypt/live/${NGINX_DOMAIN}/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/${NGINX_DOMAIN}/privkey.pem;
+    # ssl_trusted_certificate /etc/letsencrypt/live/${NGINX_DOMAIN}/chain.pem;
 
-    # SSL security settings
+    # SSL security settings (safe defaults)
     ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384';
+    ssl_prefer_server_ciphers on;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 10m;
-    include /etc/letsencrypt/options-ssl-nginx.conf 2>/dev/null;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem 2>/dev/null;
 
     # ------------------------------------------------------------------------
     # Security headers (safe with Odoo frontend)
@@ -678,9 +680,9 @@ EOF
     # Enable site
     sudo ln -sf "$NGINX_SITE" "$NGINX_ENABLED"
     
-    # Test configuration
+    # Test configuration BEFORE enabling proxy_mode
     if ! sudo nginx -t; then
-        print_error "Nginx configuration test failed! Check syntax errors."
+        print_error "Nginx configuration test failed! Check syntax errors with: sudo nginx -T"
     fi
     
     # Reload Nginx
