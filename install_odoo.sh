@@ -1,7 +1,7 @@
 #!/bin/bash
 ################################################################################
 # Odoo Multi-Instance Installation Script for Ubuntu 22.04+
-# Final Unified Version with Professional Nginx Baseline 
+# FINAL CORRECTED VERSION - Fixed duplicate upstream + URL spacing issues
 # Author: Ibrahim Aljuhani
 # Nginx Baseline: Security that works WITH Odoo, not against it
 ################################################################################
@@ -253,6 +253,7 @@ print_info "Node.js 20 LTS and rtlcss installed."
 if [ "$INSTALL_WKHTMLTOPDF" == "True" ]; then
     print_step "Installing official wkhtmltopdf 0.12.6.1-3 for Ubuntu 22.04+"
     WKHTML_DEB="/tmp/wkhtmltox_${OE_USER}.deb"
+    # ✅ FIXED: Removed extra spaces in URL
     WKHTML_URL="https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.jammy_amd64.deb"
     wget -q "$WKHTML_URL" -O "$WKHTML_DEB" || print_error "Failed to download wkhtmltopdf from official source"
     sudo gdebi -n "$WKHTML_DEB" || print_error "Failed to install wkhtmltopdf .deb package"
@@ -350,6 +351,7 @@ print_step "Upgrading pip in venv"
 sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install --upgrade pip
 print_step "Downloading Odoo requirements"
 REQUIREMENTS_FILE="/tmp/odoo_reqs_${OE_USER}.txt"
+# ✅ FIXED: Removed extra spaces in URL
 REQUIREMENTS_URL="https://github.com/odoo/odoo/raw/${OE_VERSION}/requirements.txt"
 wget -q "$REQUIREMENTS_URL" -O "$REQUIREMENTS_FILE" || print_error "Failed to download requirements.txt"
 
@@ -424,6 +426,22 @@ fi
 print_info "Odoo service started and enabled."
 
 #-------------------------------#
+#   WebSocket Map (Centralized) #
+#-------------------------------#
+# ✅ CRITICAL FIX: Define map directive ONCE globally to avoid duplicates
+if ! grep -q 'map \$http_upgrade \$connection_upgrade' /etc/nginx/nginx.conf /etc/nginx/conf.d/* 2>/dev/null; then
+    print_step "Creating centralized WebSocket map configuration..."
+    sudo tee /etc/nginx/conf.d/websocket_map.conf > /dev/null <<'MAP_EOF'
+# WebSocket upgrade mapping (required for Odoo bus, live chat, POS, IoT)
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+MAP_EOF
+    print_info "✅ WebSocket map configured globally (avoids duplicate errors)"
+fi
+
+#-------------------------------#
 #        Nginx Setup            #
 #-------------------------------#
 print_step "Configure Nginx as reverse proxy (recommended for production)?"
@@ -469,7 +487,6 @@ if [[ "$NGINX_CHOICE" == "y" || "$NGINX_CHOICE" == "yes" ]]; then
     print_step "Creating Nginx configuration (Odoo Baseline - HTTP only initially)..."
     
     # ✅ FIX: Use UNIQUE upstream names for each Odoo instance
-    # This prevents "duplicate upstream" errors when multiple instances exist
     UPSTREAM_BACKEND="odoo_backend_${OE_USER}"
     UPSTREAM_LONGPOLLING="odoo_longpolling_${OE_USER}"
     CACHE_ZONE="odoo_static_${OE_USER}"
@@ -485,14 +502,6 @@ if [[ "$NGINX_CHOICE" == "y" || "$NGINX_CHOICE" == "yes" ]]; then
 # ✅ This config starts as HTTP-only to avoid Nginx SSL errors
 # ✅ Certbot will automatically convert it to HTTPS after certificate issuance
 # ============================================================================
-
-# ----------------------------------------------------------------------------
-# WebSocket upgrade mapping (required for Odoo bus, live chat, POS, IoT)
-# ----------------------------------------------------------------------------
-map \$http_upgrade \$connection_upgrade {
-    default upgrade;
-    ''      close;
-}
 
 # ----------------------------------------------------------------------------
 # Upstream definitions (UNIQUE names per instance to avoid conflicts)
@@ -666,11 +675,6 @@ EOF
         fi
         
         print_step "Requesting SSL certificate from Let's Encrypt..."
-        # ✅ Certbot will AUTOMATICALLY:
-        #    1. Convert HTTP config to HTTPS
-        #    2. Add ssl_certificate directives
-        #    3. Add listen 443 ssl http2
-        #    4. Set up HTTP → HTTPS redirect
         if sudo certbot --nginx \
             --non-interactive \
             --agree-tos \
@@ -733,12 +737,14 @@ echo "   • Safe caching for static assets only"
 echo "   • Balanced security headers (no ORM/POS breakage)"
 echo "   • Optimized timeouts for reports & POS"
 echo "   • Production-ready with Let's Encrypt support"
+echo "   • ✅ Unique upstream names (supports multiple instances)"
+echo "   • ✅ Centralized WebSocket map (no duplicate errors)"
 echo -e "${GREEN}-----------------------------------------------------------${NC}"
 
 #-------------------------------#
 #     Cleanup Temp Files        #
 #-------------------------------#
 print_step "Cleaning temporary files"
-rm -f "/tmp/odoo_reqs_${OE_USER}.txt" "/tmp/wkhtmltox_${OE_USER}.deb"
+rm -f "/tmp/odoo_reqs_${OE_USER}.txt" "/tmp/wkhtmltox_${OE_USER}.deb" 2>/dev/null || true
 
 exit 0
