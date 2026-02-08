@@ -461,15 +461,19 @@ if [[ "$NGINX_CHOICE" == "y" || "$NGINX_CHOICE" == "yes" ]]; then
     NGINX_ENABLED="/etc/nginx/sites-enabled/${OE_USER}"
 
     # Create cache directory
-    sudo mkdir -p /var/cache/nginx/odoo_static
+    sudo mkdir -p /var/cache/nginx/odoo_static_${OE_USER}
     sudo chown -R www-data:www-data /var/cache/nginx
     sudo chmod -R 755 /var/cache/nginx
-    print_info "✅ Nginx cache directory created: /var/cache/nginx/odoo_static"
+    print_info "✅ Nginx cache directory created: /var/cache/nginx/odoo_static_${OE_USER}"
 
     print_step "Creating Nginx configuration (Odoo Baseline - HTTP only initially)..."
     
-    # ✅ STAGE 1: HTTP-ONLY CONFIG (avoids SSL certificate errors before Certbot runs)
-    # Certbot will automatically convert this to HTTPS after certificate issuance
+    # ✅ FIX: Use UNIQUE upstream names for each Odoo instance
+    # This prevents "duplicate upstream" errors when multiple instances exist
+    UPSTREAM_BACKEND="odoo_backend_${OE_USER}"
+    UPSTREAM_LONGPOLLING="odoo_longpolling_${OE_USER}"
+    CACHE_ZONE="odoo_static_${OE_USER}"
+    
     sudo tee "$NGINX_SITE" > /dev/null <<EOF
 # ============================================================================
 # 🏢 Odoo Nginx Baseline Configuration (HTTP Stage)
@@ -491,25 +495,25 @@ map \$http_upgrade \$connection_upgrade {
 }
 
 # ----------------------------------------------------------------------------
-# Upstream definitions
+# Upstream definitions (UNIQUE names per instance to avoid conflicts)
 # ----------------------------------------------------------------------------
-upstream odoo_backend {
+upstream ${UPSTREAM_BACKEND} {
     server 127.0.0.1:${OE_PORT};
     keepalive 32;
 }
 
-upstream odoo_longpolling {
+upstream ${UPSTREAM_LONGPOLLING} {
     server 127.0.0.1:${LONGPOLLING_PORT};
     keepalive 32;
 }
 
 # ----------------------------------------------------------------------------
-# Cache zone for static assets only
+# Cache zone for static assets only (UNIQUE name per instance)
 # Dynamic content (RPC / JSON) must NEVER be cached
 # ----------------------------------------------------------------------------
-proxy_cache_path /var/cache/nginx/odoo_static
+proxy_cache_path /var/cache/nginx/odoo_static_${OE_USER}
     levels=1:2
-    keys_zone=odoo_static:100m
+    keys_zone=${CACHE_ZONE}:100m
     inactive=60m
     max_size=1g;
 
@@ -546,9 +550,9 @@ server {
     # Static assets (JS / CSS / images) - Safe to cache
     # ------------------------------------------------------------------------
     location /web/static/ {
-        proxy_pass http://odoo_backend;
+        proxy_pass http://${UPSTREAM_BACKEND};
 
-        proxy_cache odoo_static;
+        proxy_cache ${CACHE_ZONE};
         proxy_cache_valid 200 7d;
         proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
         proxy_ignore_headers Cache-Control Expires;
@@ -561,7 +565,7 @@ server {
     # WebSocket endpoint (Odoo 14.0+) - REQUIRED for IoT, Live Chat, POS
     # ------------------------------------------------------------------------
     location /websocket {
-        proxy_pass http://odoo_backend;
+        proxy_pass http://${UPSTREAM_BACKEND};
 
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -581,7 +585,7 @@ server {
     # Longpolling (POS / bus notifications)
     # ------------------------------------------------------------------------
     location /longpolling {
-        proxy_pass http://odoo_longpolling;
+        proxy_pass http://${UPSTREAM_LONGPOLLING};
 
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -600,7 +604,7 @@ server {
     # Main application
     # ------------------------------------------------------------------------
     location / {
-        proxy_pass http://odoo_backend;
+        proxy_pass http://${UPSTREAM_BACKEND};
 
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
