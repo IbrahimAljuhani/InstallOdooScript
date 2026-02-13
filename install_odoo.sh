@@ -394,12 +394,55 @@ execute_installation() {
     
     print_info "Admin password saved to: $SECRETS_FILE"
     print_info "Installation manifest saved to: $MANIFEST_DIR/${OE_USER}_$(date +%Y%m%d_%H%M%S)_manifest.json"
-    
-    echo ""
+
+        echo ""
     print_info "To access your Odoo instance, open: http://$SERVER_IP:$OE_PORT"
     if [[ "$NGINX_CHOICE" == "y" || "$NGINX_CHOICE" == "yes" ]]; then
         print_info "Or via domain: http://$NGINX_DOMAIN"
     fi
+    
+    echo ""
+    print_header
+    print_center "🔒 CRITICAL SECURITY RECOMMENDATION"
+    print_divider
+    echo -e "${RED}⚠️  PRODUCTION ENVIRONMENTS: Disable Database Manager!${NC}"
+    echo ""
+    echo "The database manager interface (/web/database/manager) allows:"
+    echo "  • Creating new databases"
+    echo "  • Dropping existing databases"
+    echo "  • Changing master passwords"
+    echo ""
+    echo "This is a SEVERE SECURITY RISK in production environments."
+    echo ""
+    echo "✅ Recommended actions:"
+    echo ""
+    echo "Option 1 (Nginx - RECOMMENDED):"
+    echo "  sudo nano /etc/nginx/sites-available/${OE_USER}"
+    echo "  → Ensure this block exists:"
+    echo "     location ~* /web/database {"
+    echo "         deny all;"
+    echo "         return 403;"
+    echo "     }"
+    echo "  → Then reload Nginx:"
+    echo "     sudo nginx -t && sudo systemctl reload nginx"
+    echo ""
+    echo "Option 2 (Odoo config):"
+    echo "  sudo nano /etc/${OE_USER}-server.conf"
+    echo "  → Add these lines:"
+    echo "     list_db = False"
+    echo "     dbfilter = ^${OE_USER}$"
+    echo "  → Then restart Odoo:"
+    echo "     sudo systemctl restart ${OE_USER}-server"
+    echo ""
+    echo "💡 Why this matters:"
+    echo "  • Prevents unauthorized database creation/deletion"
+    echo "  • Blocks brute-force attacks on master password"
+    echo "  • Required by PCI-DSS and ISO 27001 compliance"
+    echo "  • Recommended by Odoo Security Best Practices"
+    print_footer
+    echo ""
+    
+    print_info "✅ Installation complete! Review security recommendations above before going live."
 }
 
 execute_step() {
@@ -926,6 +969,7 @@ generate_manifest() {
   "ssl_enabled": $([ "$SSL_CHOICE" == "y" ] && echo "true" || echo "false"),
   "ssl_email": "$LETSENCRYPT_EMAIL",
   "installation_date": "$(date -Iseconds)",
+  "master_password": "$OE_SUPERADMIN",
   "server_ip": "$SERVER_IP",
   "installation_duration_seconds": $(( $(date +%s) - start_time ))
 }
@@ -933,6 +977,7 @@ EOF
     
     sudo chmod 600 "$MANIFEST_FILE"
     print_info "Installation manifest generated: $MANIFEST_FILE"
+    print_warn "⚠️  Master password stored in manifest (permissions: 600). Keep this file secure!"
 }
 
 cleanup_temp_files() {
