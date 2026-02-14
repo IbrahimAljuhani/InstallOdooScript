@@ -392,7 +392,7 @@ execute_installation() {
     print_footer
     echo ""
     
-    print_info "Admin password saved to: $SECRETS_FILE"
+    print_info "Master Password saved to: $SECRETS_FILE"
     print_info "Installation manifest saved to: $MANIFEST_DIR/${OE_USER}_$(date +%Y%m%d_%H%M%S)_manifest.json"
 
         echo ""
@@ -697,14 +697,14 @@ create_odoo_config() {
     
     if [ "$GENERATE_RANDOM_PASSWORD" == "True" ]; then
         OE_SUPERADMIN=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1)
-        echo "$(date '+%Y-%m-%d %H:%M:%S'): Instance '$OE_USER' admin password: $OE_SUPERADMIN" >> "$SECRETS_FILE"
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): Instance '$OE_USER' Master Password: $OE_SUPERADMIN" >> "$SECRETS_FILE"
         sudo chmod 600 "$SECRETS_FILE"
-        print_info "Admin password saved to $SECRETS_FILE"
+        print_info "Master Password saved to $SECRETS_FILE"
     fi
     
     sudo tee "$CONFIG_FILE" > /dev/null <<EOF
 [options]
-admin_passwd = ${OE_SUPERADMIN}
+master_password = ${OE_SUPERADMIN}
 http_port = ${OE_PORT}
 longpolling_port = ${LONGPOLLING_PORT}
 logfile = /var/log/${OE_USER}/${OE_USER}-server.log
