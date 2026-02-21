@@ -1,9 +1,10 @@
-#  InstallOdooScript — Professional Multi-Instance Manager
+# InstallOdooScript — Professional Multi-Instance Manager
 
 [![Ubuntu 22.04+](https://img.shields.io/badge/Ubuntu-22.04%2B-333333?logo=ubuntu)](https://ubuntu.com/)
-[![Odoo 16-19](https://img.shields.io/badge/Odoo-16.0%20%7C%2017.0%20%7C%2018.0%20%7C%2019.0-00A09D?logo=odoo)](https://www.odoo.com/)
+[![Odoo 16–19](https://img.shields.io/badge/Odoo-16.0%20|%2017.0%20|%2018.0%20|%2019.0-00A09D?logo=odoo)](https://www.odoo.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Production Ready](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)](#production-ready)
+[![Version](https://img.shields.io/badge/Version-3.0.0-blueviolet)](#)
+[![Production Ready](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)](#)
 
 > **Production-grade Bash toolkit** to install, manage, and safely remove multiple isolated Odoo instances on Ubuntu servers — engineered for DevOps teams and enterprise environments.
 
@@ -15,96 +16,56 @@
 
 Unlike basic installation scripts, this toolkit implements **professional DevOps practices**:
 
-✅ **Configuration-First Architecture** — gather all inputs → validate → execute (no mid-installation interruptions)  
-✅ **Triple-Layer Security** — isolated users, PostgreSQL roles, and Nginx hardening  
-✅ **Production-Ready Defaults** — WebSocket support, POS optimization, and SSL integration  
-✅ **Zero-Downtime Operations** — safe deletion with automatic backups and dry-run mode  
+✅ **Configuration-First Architecture** — Gather all inputs → Validate → Execute (no mid-installation surprises)  
+✅ **Three Operating Modes** — Interactive wizard, Non-interactive CI/CD, and Dry-run simulation  
+✅ **Triple-Layer Security** — Isolated system users, PostgreSQL roles, and Nginx hardening  
+✅ **Full Lifecycle Management** — Install, inspect, back up, and safely delete instances  
+✅ **Zero Leftover Artifacts** — Deletion cleans everything: code, DB, logs, Nginx cache, manifests  
+✅ **Gevent Compatibility Fix** — Automatically pins `gevent==23.9.1` for Odoo 16–18  
 
 ---
 
 ## 📦 Included Tools
 
-| Script | Purpose | Key Features |
-|--------|---------|--------------|
-| **`install_odoo.sh`** | Install new instances | Interactive wizard, non-interactive mode, dry-run simulation, manifest generation |
-| **`delete_odoo.sh`** | Safely remove instances | Triple-validation safety checks, automatic backup, dry-run preview |
+| Script | Version | Purpose | Key Features |
+|--------|---------|---------|--------------|
+| `install_odoo.sh` | v3.0.0 | Install new instances | Interactive wizard, non-interactive mode, dry-run, manifest generation, master password terminal display |
+| `delete_odoo.sh` | v3.0.0 | Safely remove instances | 4-artifact validation, smart backup, Nginx cache cleanup, WebSocket map cleanup, no `eval` |
 
 ---
 
-## 🛡️ Critical Security Note: Database Manager in Production
+## 🚀 Quick Start
 
-### 🔒 Why Disable `/web/database/manager`?
-
-The database manager interface allows:
-- Creating new databases (attack surface expansion)
-- Dropping existing databases (data destruction risk)
-- Changing master passwords (credential compromise)
-
-> ⚠️ **73% of Odoo breaches start via the database manager interface** (Odoo Security Report 2025)
-
-### ✅ How This Toolkit Protects You
-
-**Your Nginx configuration already blocks database manager access** — no additional Odoo config needed:
-
-```nginx
-# /etc/nginx/sites-available/<instance>
-location ~* /web/database {
-    deny all;
-    return 403;
-}
-```
-# This configuration:
-
-
-✅  Blocks all database-related paths (/web/database/manager, /web/database/selector, etc.)  
-✅  Works at the web server layer (faster and more secure than application-layer blocking)  
-✅ Survives Odoo updates and restarts  
-✅  Requires no modification to Odoo configuration files  
-
-💡 Professional Recommendation:  
-The Nginx-level block is sufficient and preferred for production environments.  
-Adding list_db = False in Odoo config is optional (defense-in-depth) but not required.  
-
-🔍 Verify Protection is Active 
-```nginx
-# Test from your server
-curl -I http://localhost/web/database/manager
-
-# Expected response:
-# HTTP/1.1 403 Forbidden
-# Server: nginx  
-```
-# 🚀 Quick Start
 ### 1. Download the Toolkit
 
-Download installation script
 ```bash
-wget https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/refs/heads/install_odoo_PNB/install_odoo.sh -O install_odoo.sh
-```
-Download deletion script
-```bash
-wget https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/refs/heads/install_odoo_PNB/delete_odoo.sh -O delete_odoo.sh
-```
- Make executable
-```bash
+# Download installation script
+wget https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/main/install_odoo.sh
+
+# Download deletion script
+wget https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/main/delete_odoo.sh
+
+# Make executable
 chmod +x install_odoo.sh delete_odoo.sh
 ```
+
 ### 2. Install Interactively (Recommended)
+
 ```bash
 sudo ./install_odoo.sh
 ```
 
-**The wizard will guide you through:**
-1. Instance name selection (prod, staging, etc.)  
-2. Odoo version choice (16.0 → 19.0)  
-3. Port configuration (auto-detects conflicts)  
-4. Nginx + SSL setup (optional but recommended for production)  
-5. Visual summary before final confirmation
+The wizard walks you through 5 steps:
+
+1. **Instance name** — validated, conflict-checked, with optional cleanup of existing instances
+2. **Odoo version** — choose from 16.0 → 19.0
+3. **Port configuration** — auto-detects conflicts on both HTTP and Longpolling ports
+4. **Nginx + SSL setup** — optional but recommended for production
+5. **Visual summary** — review everything before final confirmation
 
 ### 3. Install Non-Interactively (CI/CD)
 
-
-```nginx
+```bash
 sudo ./install_odoo.sh --non-interactive \
   --instance prod \
   --version 18.0 \
@@ -114,279 +75,585 @@ sudo ./install_odoo.sh --non-interactive \
   --ssl \
   --email admin@example.com
 ```
-```bash
-sudo ./install_odoo.sh --non-interactive --instance prod --version 18.0 --port 8069 --nginx --domain example.com --ssl --email admin@example.com
-```
+
 ### 4. Dry-Run Simulation (Safe Testing)
+
 ```bash
-sudo ./install_odoo.sh --dry-run --instance test --version 18.0 --port 8070
+sudo ./install_odoo.sh --dry-run --instance test --version 18.0 --port 8069
 ```
 
-### 📋 Post-Installation Structure
-```nginx
+Simulates the full installation flow without touching the system. Every step prints `[DRY RUN] Would execute: ...`.
+
+---
+
+## 🗑️ Deleting an Instance
+
+### Interactive (shows a numbered menu of all detected instances)
+
+```bash
+sudo ./delete_odoo.sh
+```
+
+### Non-Interactive
+
+```bash
+# Safe deletion with automatic backup
+sudo ./delete_odoo.sh --instance prod --backup --force
+
+# Preview what would be deleted — no changes made
+sudo ./delete_odoo.sh --instance prod --dry-run
+```
+
+---
+
+## ⚙️ All CLI Options
+
+### `install_odoo.sh`
+
+| Option | Description |
+|--------|-------------|
+| *(no flags)* | Launch interactive wizard |
+| `--non-interactive` | Skip all prompts (requires `--instance` and `--version`) |
+| `--dry-run` | Simulate full installation without changes |
+| `--instance <name>` | Instance name (lowercase, letters/digits/hyphens/underscores) |
+| `--version <ver>` | Odoo version: `19.0` \| `18.0` \| `17.0` \| `16.0` |
+| `--port <port>` | HTTP port (default: `8069`; Longpolling = port + 3) |
+| `--nginx` | Enable Nginx reverse proxy |
+| `--domain <domain>` | Domain name for Nginx (defaults to server IP) |
+| `--ssl` | Enable Let's Encrypt SSL via Certbot |
+| `--email <email>` | Email for SSL certificate notifications |
+| `--help`, `-h` | Show help message |
+
+### `delete_odoo.sh`
+
+| Option | Description |
+|--------|-------------|
+| *(no flags)* | Launch interactive instance selector |
+| `--instance <name>` | Instance name to delete |
+| `--backup` | Create full backup before deletion |
+| `--force` | Skip confirmation prompt |
+| `--dry-run` | Simulate deletion without changes (implies `--force`) |
+| `--help`, `-h` | Show help message |
+
+---
+
+## 🏗️ Architecture — Configuration-First Pattern
+
+```
+┌─────────────────────────────────────────────────────┐
+│               install_odoo.sh Flow                   │
+│                                                     │
+│  Phase 1: Gather    Phase 2: Validate    Phase 3: Execute
+│  ─────────────      ──────────────────   ──────────────
+│  Instance name  →   Summary table    →   step_check_tools
+│  Odoo version       Confirmation         step_update_system
+│  Port (+ LP)        (or auto in          step_install_packages
+│  Nginx/SSL          non-interactive)     step_install_nodejs
+│                                          step_install_wkhtmltopdf
+│                                          step_setup_postgresql
+│                                          step_create_pg_user
+│                                          step_create_system_user
+│                                          step_clone_odoo
+│                                          step_create_venv
+│                                          step_install_python_deps
+│                                          step_create_config
+│                                          step_create_service
+│                                          step_start_service
+│                                          step_configure_nginx  ← optional
+│                                          step_generate_manifest
+│                                          step_cleanup
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📋 Post-Installation File Structure
+
+After installing an instance named `odoo-prod`:
+
+```
 /
-├── odoo-prod/                          # Instance root directory
-│   ├── odoo-prod-server/               # Odoo source code (git clone)
-│   └── custom/addons/                  # Your custom modules (empty initially)
-├── var/log/odoo-prod/                  # Instance-specific logs
-├── etc/odoo-prod-server.conf           # Odoo configuration (640 permissions)
-├── etc/systemd/system/odoo-prod-server.service  # Auto-restart service
-├── etc/nginx/sites-available/odoo-prod         # Nginx config (with security hardening)
+├── odoo-prod/
+│   ├── odoo-prod-server/               # Odoo source code (shallow git clone)
+│   │   └── odoo-bin                    # Main executable
+│   ├── custom/
+│   │   └── addons/                     # Your custom modules (empty initially)
+│   └── venv/                           # Isolated Python virtual environment
+│
+├── var/log/odoo-prod/
+│   └── odoo-prod-server.log            # Instance log file
+│
+├── etc/
+│   ├── odoo-prod-server.conf           # Odoo config (permissions: 640)
+│   ├── systemd/system/
+│   │   └── odoo-prod-server.service    # Systemd service (auto-restart)
+│   └── nginx/
+│       ├── sites-available/odoo-prod   # Nginx virtual host config
+│       ├── sites-enabled/odoo-prod     # Symlink (active)
+│       └── conf.d/
+│           └── ws_upgrade_map.conf     # Shared WebSocket upgrade map
+│
+├── var/cache/nginx/
+│   └── odoo_static_odoo-prod/          # Nginx static asset cache (2 GB max)
+│
 └── root/
-    ├── odoo-secrets.txt                # Master passwords (600 permissions)
-    ├── odoo-installs/                  # Installation manifests
-    │   └── odoo-prod_20260209_143022_manifest.json  # ← Includes master password
+    ├── odoo-secrets.txt                # Master passwords log (permissions: 600)
+    ├── odoo-installs/
+    │   └── odoo-prod_20260209_143022_manifest.json
     └── odoo-backups/                   # Automatic backups (if requested)
+        ├── odoo-prod_20260209_143022.tar.gz
+        └── odoo-prod_db_20260209_143022.sql
 ```
 
-### 🔑 Manifest File Contents  
-Each installation generates a detailed JSON manifest at /root/odoo-installs/:
-```nginx
+---
+
+## 🔑 Manifest File
+
+Every installation generates a JSON manifest at `/root/odoo-installs/`:
+
+```json
 {
-  "instance_name": "prod",
-  "odoo_version": "18.0",
-  "http_port": 8069,
+  "instance_name":    "prod",
+  "odoo_version":     "18.0",
+  "http_port":        8069,
   "longpolling_port": 8072,
-  "nginx_enabled": true,
-  "domain": "example.com",
-  "ssl_enabled": true,
-  "ssl_email": "admin@example.com",
-  "installation_date": "2026-02-09T14:30:22+03:00",
-  "master_password": "xK9pLm2qR7sT5vW8",
-  "server_ip": "192.168.1.2",
-  "installation_duration_seconds": 187
+  "nginx_enabled":    true,
+  "domain":           "example.com",
+  "ssl_enabled":      true,
+  "ssl_email":        "admin@example.com",
+  "server_ip":        "192.168.1.10",
+  "installation_date":"2026-02-09T14:30:22+03:00"
 }
 ```
-### 🔐 Security Note: Manifest files have 600 permissions (root-only access). Never expose them publicly.  
-### ⚠️ Note regarding Odoo 19.0: The current version is beta (as of February 2026). It is recommended for testing purposes only. Use version 18.0 or 17.0 (stable) for production.  
 
-# Complete User Guide — Odoo Multi-Instance Management  
-### 🚀 Essential Daily Commands  
-### 1. Service Management  
+> 🔐 Manifest files are created with `600` permissions (root-only access). Keep them off public storage.
+
+---
+
+## 🔒 Security Model
+
+### Master Password Handling
+
+The master password is:
+- **Displayed in the terminal** at the end of installation (highlighted in red)
+- **Saved to** `/root/odoo-secrets.txt` with `600` permissions
+- **Not included** in the manifest JSON (unlike older versions)
+
+A security reminder is printed before the terminal session ends:
+
+```
+⚠  Before leaving this terminal:
+   1. Note or copy the master password somewhere safe.
+   2. Clear terminal history:  history -c && history -w
+```
+
+### Nginx Security Hardening
+
+The generated Nginx config includes:
+
 ```nginx
-# Check service status (running/stopped/failed)
+# Block entire database manager path (not just /manager)
+location ~* ^/web/database {
+    deny all;
+    return 403;
+}
+```
+
+This blocks all sub-paths (`/manager`, `/selector`, `/create`, etc.) at the web server layer — faster and more reliable than application-layer blocking.
+
+**Verify protection is active:**
+
+```bash
+curl -s -o /dev/null -w "%{http_code}" http://localhost/web/database/manager
+# Expected: 403
+```
+
+### Port Protection
+
+When Nginx is configured, direct access to the Odoo port is automatically blocked:
+
+```bash
+sudo ufw deny <port>
+```
+
+---
+
+## 🌐 Nginx Configuration Details
+
+The generated Nginx config includes separate upstreams with `keepalive 32`, a dedicated 2 GB static asset cache zone per instance, full WebSocket support for Bus / Live Chat / Kitchen Screen / IoT, and Longpolling on a dedicated upstream.
+
+```nginx
+upstream odoo_prod {
+    server 127.0.0.1:8069;
+    keepalive 32;
+}
+
+upstream odoo_prod_lp {
+    server 127.0.0.1:8072;
+    keepalive 32;
+}
+
+proxy_cache_path /var/cache/nginx/odoo_static_prod
+    levels=1:2
+    keys_zone=static_prod:100m
+    inactive=60m
+    max_size=2g;
+```
+
+A shared WebSocket upgrade map is written to `/etc/nginx/conf.d/ws_upgrade_map.conf` (created once, shared across all instances). `delete_odoo.sh` automatically removes it only when deleting the last Odoo instance.
+
+---
+
+## 🗑️ What `delete_odoo.sh` Removes
+
+The deletion script validates an instance using **4 required artifacts** before proceeding:
+
+```
+✓ /etc/<instance>-server.conf
+✓ /etc/systemd/system/<instance>-server.service
+✓ /<instance>/<instance>-server/  (directory)
+✓ /<instance>/<instance>-server/odoo-bin  (file)
+```
+
+If any artifact is missing, the script refuses to run — preventing accidental deletion of non-Odoo users.
+
+**Full cleanup checklist per deletion:**
+
+| Component | Action |
+|-----------|--------|
+| Odoo service | Stop → SIGKILL → disable → remove service file |
+| Config file | `/etc/<instance>-server.conf` removed |
+| System user | `userdel -r` + `rm -rf /<instance>` |
+| Log directory | `/var/log/<instance>` removed |
+| PostgreSQL | Connections terminated → DB dropped → user dropped |
+| Nginx site | `sites-available` + `sites-enabled` removed → Nginx reloaded |
+| Nginx cache | `/var/cache/nginx/odoo_static_<instance>` removed |
+| Manifest files | `/root/odoo-installs/<instance>_*_manifest.json` removed |
+| WebSocket map | Removed only if no other Odoo instances remain |
+
+---
+
+## 💾 Backup & Restore
+
+### Backup Before Deletion
+
+```bash
+sudo ./delete_odoo.sh --instance prod --backup --force
+```
+
+This creates in `/root/odoo-backups/<instance>_<timestamp>/`:
+
+```
+home.tar.gz                     # Full home directory compressed
+<instance>-server.conf          # Odoo config
+<instance>-server.service       # Systemd service
+db.sql                          # PostgreSQL full dump
+nginx_<instance>                # Nginx virtual host config
+<instance>_*_manifest.json      # Installation manifest(s)
+```
+
+All files are set to `600` permissions.
+
+### Manual Database Backup
+
+```bash
+sudo -u postgres pg_dump <instance> > /root/backup_<instance>_$(date +%Y%m%d).sql
+```
+
+### Manual Full Backup
+
+```bash
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+sudo -u postgres pg_dump <instance> > /root/backup_<instance>_db_${TIMESTAMP}.sql
+sudo tar -czf /root/backup_<instance>_files_${TIMESTAMP}.tar.gz \
+  /<instance> /etc/<instance>-server.conf
+```
+
+### Restore from Backup
+
+```bash
+sudo systemctl stop <instance>-server
+sudo -u postgres psql -d <instance> < /root/backup_<instance>_db_20260209.sql
+sudo tar -xzf /root/backup_<instance>_files_20260209.tar.gz -C /
+sudo systemctl start <instance>-server
+```
+
+---
+
+## 📋 Essential Daily Commands
+
+### Service Management
+
+```bash
+# Status
 sudo systemctl status <instance>-server
 
-# Start instance manually
+# Start / Stop / Restart
 sudo systemctl start <instance>-server
-
-# Stop instance manually
 sudo systemctl stop <instance>-server
-
-# Restart instance (after config changes)
 sudo systemctl restart <instance>-server
 
-# Enable auto-start on boot
-sudo systemctl enable <instance>-server
-
-# Disable auto-start
-sudo systemctl disable <instance>-server
-
-# View real-time logs (essential for debugging)
+# Live logs
 sudo journalctl -u <instance>-server -f
 
-# View last 100 log entries
+# Last 100 lines
 sudo journalctl -u <instance>-server -n 100 --no-pager
 
-# Check service health (exit code 0 = healthy)
+# Health check (exit 0 = healthy)
 sudo systemctl is-active <instance>-server && echo "✅ Healthy" || echo "❌ Down"
 ```
 
-### 2. Instance Discovery & Management
-```nginx
-# List all installed instances (safe interactive menu)
+### Configuration
+
+```bash
+# Edit config
+sudo nano /etc/<instance>-server.conf
+
+# View master password
+sudo grep "master_password" /etc/<instance>-server.conf | awk -F' = ' '{print $2}'
+
+# Rotate master password
+NEW_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 20)
+sudo sed -i "s/^master_password.*/master_password    = $NEW_PASS/" /etc/<instance>-server.conf
+sudo systemctl restart <instance>-server
+echo "$(date '+%Y-%m-%d %H:%M:%S')  instance='<instance>'  new_master_password='$NEW_PASS'" \
+  | sudo tee -a /root/odoo-secrets.txt
+```
+
+### Instance Discovery
+
+```bash
+# List all detected Odoo instances (interactive menu)
 sudo ./delete_odoo.sh
 
-# Preview deletion without changes (dry-run)
+# Preview deletion without changes
 sudo ./delete_odoo.sh --instance <instance> --dry-run
-
-# Safe deletion with automatic backup (production recommended)
-sudo ./delete_odoo.sh --instance <instance> --backup --force
-
-# Force deletion without backup (development only)
-sudo ./delete_odoo.sh --instance <instance> --force
-
-# Verify instance deletion succeeded
-sudo ./delete_odoo.sh 2>&1 | grep -q "<instance>" && echo "❌ Still exists" || echo "✅ Deleted"
-```
-## 🔒 Security & Hardening Commands
-### 3. Critical Security Verification
-```nginx
-# Verify database manager is BLOCKED (MUST return 403)
-curl -s -o /dev/null -w "%{http_code}" http://localhost/web/database/manager
-# Expected output: 403
-
-# Verify direct port access is BLOCKED when Nginx is enabled
-sudo ss -tulpn | grep ":<port>" | grep -q "nginx" && echo "✅ Port protected by Nginx" || echo "⚠️ Port exposed directly"
-
-# Check firewall status
-sudo ufw status verbose
-
-# Block internal port (if accidentally exposed)
-sudo ufw deny <port> && echo "✅ Port <port> blocked"
-
-# Allow temporary access for maintenance (5 minutes)
-sudo ufw allow from <your-ip> to any port <port> comment 'Maintenance access'
-(sleep 300 && sudo ufw delete allow from <your-ip> to any port <port>) &
-
-# Verify master password file permissions (MUST be 600)
-stat -c "%a %n" /root/odoo-secrets.txt
-# Expected output: 600 /root/odoo-secrets.txt
-```
-### 4. Password & Credential Management
-```nginx
-# View full master password (root only)
-sudo grep "admin_passwd" /etc/<instance>-server.conf | awk -F' = ' '{print $2}'
-
-# Change master password securely
-NEW_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c16)
-sudo sed -i "s/^admin_passwd = .*/admin_passwd = $NEW_PASS/" /etc/<instance>-server.conf
-sudo systemctl restart <instance>-server
-echo "New password: $NEW_PASS" | tee -a /root/odoo-secrets.txt
 ```
 
-## 🌐 Nginx & SSL Management
-### 5. Nginx Operations
-```nginx
-# Test Nginx configuration syntax (ALWAYS do before reload)
-sudo nginx -t && echo "✅ Config valid" || echo "❌ Config error"
+---
 
-# View full Nginx configuration
-sudo nginx -T 2>/dev/null | head -100
+## 🌐 Nginx & SSL Commands
 
-# Reload Nginx without downtime
-sudo nginx -t && sudo systemctl reload nginx && echo "✅ Reloaded"
+```bash
+# Validate Nginx config (always run before reload)
+sudo nginx -t && echo "✅ Config valid"
 
-# Restart Nginx completely
-sudo systemctl restart nginx
+# Reload without downtime
+sudo nginx -t && sudo systemctl reload nginx
 
-# View active Nginx sites
+# View active sites
 ls -la /etc/nginx/sites-enabled/
 
-# Monitor live HTTP requests
-sudo tail -f /var/log/nginx/<instance>_access.log | awk '{print $1, $4, $7, $9}'
+# Monitor live requests
+sudo tail -f /var/log/nginx/<instance>_access.log
 
-# Monitor Nginx errors in real-time
+# Monitor errors
 sudo tail -f /var/log/nginx/<instance>_error.log
-```
-### 6. SSL Certificate Management
-```nginx
-# Test certificate renewal (dry-run)
-sudo certbot renew --dry-run && echo "✅ Renewal test passed" || echo "❌ Renewal test failed"
 
-# Force certificate renewal
-sudo certbot renew --force-renewal
+# Test SSL renewal (dry-run)
+sudo certbot renew --dry-run
 
-# View certificate expiration dates
+# View certificate expiry
 sudo certbot certificates
 
-# Check SSL certificate validity for domain
-echo | openssl s_client -connect <domain>:443 2>/dev/null | openssl x509 -noout -dates
-
-# Verify HTTPS is working correctly
-curl -I https://<domain>/web/login | grep "HTTP/2"
-
-# Force HTTP → HTTPS redirect test
-curl -I http://<domain>/web/login | grep "301"
+# Verify HTTPS
+curl -I https://<domain>/web/login | grep "HTTP"
 ```
 
+---
 
-## <img src="https://cdnjs.cloudflare.com/ajax/libs/flag-icons/7.0.0/flags/4x3/sa.svg" width="22"> ZATCA Integration Commands (Saudi Arabia)
-### 7. ZATCA Connectivity Verification
-```nginx
-# Verify DNS resolution for ZATCA endpoints (CRITICAL)
-nslookup gw-fatoora.zatca.gov.sa || echo "❌ DNS resolution failed - fix /etc/resolv.conf"
+## 📊 Performance Monitoring
 
-# Test connectivity to ZATCA production endpoint
+```bash
+# Memory usage for instance
+ps aux | grep "odoo.*<instance>" | grep -v grep \
+  | awk '{sum+=$6} END {print "Memory (MB): " sum/1024}'
+
+# Active DB connections
+sudo -u postgres psql -d <instance> -tAc \
+  "SELECT count(*) FROM pg_stat_activity WHERE datname = '<instance>';"
+
+# Database size
+sudo -u postgres psql -d <instance> -c \
+  "SELECT pg_size_pretty(pg_database_size('<instance>')) AS size;"
+
+# Instance directory size
+du -sh /<instance> /var/log/<instance>
+
+# Top 10 largest tables
+sudo -u postgres psql -d <instance> -c \
+  "SELECT tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
+   FROM pg_tables ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC LIMIT 10;"
+```
+
+---
+
+## 🔥 Troubleshooting
+
+### Service Fails to Start
+
+```bash
+# Check logs
+sudo journalctl -u <instance>-server -n 50 --no-pager
+
+# Common causes:
+# 1. Port already in use
+sudo ss -tulpn | grep :<port>
+
+# 2. PostgreSQL not running
+sudo systemctl status postgresql
+
+# 3. Python venv broken
+sudo -u <instance> /<instance>/venv/bin/python --version
+```
+
+### Nginx Returns 502
+
+```bash
+# Check if Odoo is running
+sudo systemctl is-active <instance>-server
+
+# Verify proxy_mode is enabled
+grep "proxy_mode" /etc/<instance>-server.conf
+
+# Check Nginx upstream config
+grep -A3 "upstream odoo_<instance>" /etc/nginx/sites-available/<instance>
+```
+
+### WebSocket Not Working (POS / Live Chat)
+
+```bash
+# Verify WebSocket map exists
+cat /etc/nginx/conf.d/ws_upgrade_map.conf
+
+# Test WebSocket endpoint
+curl -i -N \
+  -H "Connection: Upgrade" -H "Upgrade: websocket" \
+  -H "Host: localhost" http://localhost/websocket 2>&1 | head -5
+
+# Check proxy_mode
+grep "proxy_mode" /etc/<instance>-server.conf
+# Must output: proxy_mode = True
+```
+
+### SSL Certificate Issues
+
+```bash
+# Test renewal manually
+sudo certbot renew --dry-run --cert-name <domain>
+
+# Check certificate expiry
+echo | openssl s_client -connect <domain>:443 2>/dev/null \
+  | openssl x509 -noout -dates
+```
+
+---
+
+## <img src="https://cdnjs.cloudflare.com/ajax/libs/flag-icons/7.0.0/flags/4x3/sa.svg" width="20"> ZATCA Integration (Saudi Arabia)
+
+```bash
+# Verify ZATCA DNS resolution
+nslookup gw-fatoora.zatca.gov.sa \
+  && echo "✅ DNS OK" || echo "❌ DNS failed — fix /etc/resolv.conf"
+
+# Test ZATCA production endpoint
 curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" \
   https://gw-fatoora.zatca.gov.sa/e-invoicing/core/compliance
 
-# Test connectivity to ZATCA sandbox endpoint
+# Test ZATCA sandbox endpoint
 curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" \
   https://gw-fatoora-uat.zatca.gov.sa/e-invoicing/core/compliance
 
-# Verify legacy domain is BLOCKED (should fail)
-curl -m 5 -s -o /dev/null -w "HTTP Status: %{http_code}\n" \
-  https://gw-apic-gov.gazt.gov.sa/e-invoicing/core/ 2>&1 | grep -q "Could not resolve" && echo "✅ Legacy domain blocked" || echo "⚠️ Legacy domain still resolving"
-
-# Monitor ZATCA API calls in Odoo logs
-sudo tail -f /var/log/<instance>/<instance>-server.log | grep -i "zatca\|fatoora\|e-invoice"
-```
-### 8. POS & Offline Mode Verification
-```nginx
-# Verify WebSocket endpoint is working (critical for POS)
-curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" \
-  -H "Host: localhost" http://localhost/websocket 2>&1 | head -10 | grep -q "101 Switching Protocols" && echo "✅ WebSocket active" || echo "❌ WebSocket failed"
-
-# Verify longpolling endpoint for POS notifications
-curl -I http://localhost:<port>/longpolling/poll | grep "200 OK" && echo "✅ Longpolling active" || echo "❌ Longpolling failed"
-
-# Check proxy_mode is enabled (required for Nginx + WebSocket)
-grep -q "^proxy_mode = True" /etc/<instance>-server.conf && echo "✅ proxy_mode enabled" || echo "❌ proxy_mode missing"
+# Monitor ZATCA-related log entries
+sudo journalctl -u <instance>-server -f \
+  | grep -i "zatca\|fatoora\|e-invoice"
 ```
 
-## 💾 Backup & Restore Operations
-### 9. Backup Commands
-```nginx
-# Backup database only (quick)
-sudo -u postgres pg_dump <instance> > /root/backup_<instance>_db_$(date +%Y%m%d_%H%M%S).sql
+---
 
-# Backup files only
-sudo tar -czf /root/backup_<instance>_files_$(date +%Y%m%d_%H%M%S).tar.gz \
-  /<instance> /etc/<instance>-server.conf /etc/systemd/system/<instance>-server.service
+## ✅ Production Hardening Checklist
 
-# Full backup (database + files)
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-sudo -u postgres pg_dump <instance> > /root/backup_<instance>_db_$TIMESTAMP.sql
-sudo tar -czf /root/backup_<instance>_files_$TIMESTAMP.tar.gz \
-  /<instance> /etc/<instance>-server.conf
-echo "✅ Full backup created: $TIMESTAMP"
+Before going live, verify each item:
 
-# List existing backups
-ls -lh /root/backup_* | grep -E "\.sql|\.tar\.gz"
 ```
-### 10. Restore Commands
-```nginx
-# Restore database from backup
-sudo -u postgres psql -d <instance> < /root/backup_<instance>_db_20260209.sql
+[ ] Database manager is blocked
+    curl -s -o /dev/null -w "%{http_code}" http://localhost/web/database/manager
+    → Expected: 403
 
-# Restore files from backup
-sudo tar -xzf /root/backup_<instance>_files_20260209.tar.gz -C /
+[ ] Direct port access is blocked (if Nginx is used)
+    sudo ufw status | grep <port>
+    → Expected: <port> DENY
 
-# Full restore procedure
-sudo systemctl stop <instance>-server
-sudo -u postgres psql -d <instance> < /root/backup_<instance>_db_20260209.sql
-sudo tar -xzf /root/backup_<instance>_files_20260209.tar.gz -C /
-sudo systemctl start <instance>-server
-echo "✅ Full restore completed"
+[ ] Master password file permissions
+    stat -c "%a %n" /root/odoo-secrets.txt
+    → Expected: 600
+
+[ ] Manifest file permissions
+    stat -c "%a %n" /root/odoo-installs/*.json
+    → Expected: 600
+
+[ ] SSL certificate is valid and auto-renewing
+    sudo certbot certificates
+    sudo certbot renew --dry-run
+
+[ ] Firewall rules reviewed
+    sudo ufw status verbose
+
+[ ] Automatic OS updates enabled
+    sudo dpkg-reconfigure unattended-upgrades
+
+[ ] Log rotation configured
+    ls /etc/logrotate.d/
+
+[ ] proxy_mode enabled (required with Nginx)
+    grep "proxy_mode" /etc/<instance>-server.conf
+    → Expected: proxy_mode = True
+
+[ ] Odoo 19.0 disclaimer acknowledged (beta as of Feb 2026 — use 18.0 for production)
 ```
 
-## 📊 Performance Monitoring
-### 11. Resource Monitoring
-```nginx
-# Monitor memory usage for instance
-ps aux | grep "odoo.*<instance>" | grep -v grep | awk '{sum+=$6} END {print "Memory (MB): " sum/1024}'
+---
 
-# Monitor CPU usage for instance
-top -b -n1 -u <instance> | tail -n +8 | awk '{cpu+=$9} END {print "CPU (%): " cpu}'
+## 📌 Version Notes
 
-# Count active database connections
-sudo -u postgres psql -d <instance> -tAc "SELECT count(*) FROM pg_stat_activity WHERE datname = '<instance>';"
+| Odoo Version | Status | Notes |
+|---|---|---|
+| 19.0 | ⚠️ Beta | Testing only — not recommended for production (as of February 2026) |
+| 18.0 | ✅ Stable | Recommended for new production deployments |
+| 17.0 | ✅ LTS | Long-term support — safe for existing production |
+| 16.0 | ⚠️ Legacy | Approaching end of support |
 
-# Monitor disk space usage
-df -h / /var/log | grep -v tmpfs
+> **Gevent note:** Odoo 16, 17, and 18 require `gevent==23.9.1`. The installer handles this automatically by removing the version from `requirements.txt` and installing the pinned version separately.
 
-# Monitor instance directory size
-du -sh /<instance> /var/log/<instance>
-```
-### 12. Database Performance
-```nginx
-# View slow queries (requires pg_stat_statements extension)
-sudo -u postgres psql -d <instance> -c "SELECT query, total_time, calls FROM pg_stat_statements ORDER BY total_time DESC LIMIT 10;" 2>/dev/null || echo "pg_stat_statements not enabled"
+---
 
-# Check database size
-sudo -u postgres psql -d <instance> -c "SELECT pg_size_pretty(pg_database_size('<instance>')) AS size;"
+## 📁 Key File Locations Reference
 
-# List largest tables
-sudo -u postgres psql -d <instance> -c "SELECT schemaname, tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size FROM pg_tables ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC LIMIT 20;" | head -25
-```
+| File / Directory | Purpose | Permissions |
+|---|---|---|
+| `/etc/<instance>-server.conf` | Odoo runtime configuration | `640` |
+| `/etc/systemd/system/<instance>-server.service` | Systemd service definition | `644` |
+| `/<instance>/<instance>-server/` | Odoo source code | owned by `<instance>` |
+| `/<instance>/custom/addons/` | Custom modules directory | owned by `<instance>` |
+| `/<instance>/venv/` | Python virtual environment | owned by `<instance>` |
+| `/var/log/<instance>/` | Log directory | owned by `<instance>` |
+| `/etc/nginx/sites-available/<instance>` | Nginx virtual host | `644` |
+| `/var/cache/nginx/odoo_static_<instance>/` | Nginx static cache | owned by `www-data` |
+| `/etc/nginx/conf.d/ws_upgrade_map.conf` | Shared WebSocket map | `644` |
+| `/root/odoo-secrets.txt` | Master password log | `600` |
+| `/root/odoo-installs/` | JSON manifest files | `600` each |
+| `/root/odoo-backups/` | Backup archives | `600` each |
+| `/root/odoo-deletion-log.txt` | Deletion audit log | `644` |
+
+---
+
+## 👤 Author
+
+**Ibrahim Aljuhani**  
+🔗 [github.com/IbrahimAljuhani/InstallOdooScript](https://github.com/IbrahimAljuhani/InstallOdooScript)
+
+---
+
+## 📄 License
+
+MIT License — see [LICENSE](LICENSE) for full terms.
