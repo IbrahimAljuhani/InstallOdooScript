@@ -429,8 +429,8 @@ step_install_wkhtmltopdf() {
 }
 
 step_setup_postgresql() {
-    if dpkg -l 2>/dev/null | grep -q "postgresql-15"; then
-        print_info "PostgreSQL 15 is already installed."
+    if dpkg -l 2>/dev/null | grep -q "postgresql-16"; then
+        print_info "PostgreSQL 16 is already installed."
         systemctl is-active --quiet postgresql || {
             sudo systemctl start postgresql
             sudo systemctl enable postgresql
@@ -443,8 +443,8 @@ step_setup_postgresql() {
 http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
         sudo apt update -y
-        sudo apt install -y postgresql-15 || print_error "Failed to install PostgreSQL 15."
-        print_info "PostgreSQL 15 installed."
+        sudo apt install -y postgresql-16 || print_error "Failed to install PostgreSQL 16."
+        print_info "PostgreSQL 16 installed."
     fi
 }
 
@@ -826,7 +826,7 @@ execute_installation() {
     execute_step "Installing wkhtmltopdf"    step_install_wkhtmltopdf
 
     print_section "PostgreSQL Setup"
-    execute_step "Setting up PostgreSQL 15"  step_setup_postgresql
+    execute_step "Setting up PostgreSQL 16"  step_setup_postgresql
     execute_step "Creating PostgreSQL user"  step_create_pg_user
 
     print_section "System User & Directories"
