@@ -499,8 +499,13 @@ step_set_permissions() {
 step_create_venv() {
     local VENV_PATH="/$OE_USER/venv"
     sudo -u "$OE_USER" python3 -m venv "$VENV_PATH"
-    sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install --upgrade pip
-    print_info "Python virtual environment: $VENV_PATH"
+
+    print_step "Upgrading pip, setuptools, and wheel..."
+    sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install --upgrade pip setuptools wheel
+
+    print_step "Installing extra required packages..."
+    sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install qifparse python-escpos pillow
+    print_info "Python virtual environment ready: $VENV_PATH"
 }
 
 step_install_python_deps() {
@@ -510,9 +515,16 @@ step_install_python_deps() {
 
     wget -q "$REQ_URL" -O "$REQ_FILE" || print_error "Failed to download requirements.txt"
 
-    # Fix known gevent compatibility issue on Odoo 16–18
+    # cbor2==5.4.2 in requirements.txt is broken on Python 3.10 — its setup.py
+    # calls pkg_resources which is missing even with --no-build-isolation on newer pip.
+    # Fix: replace the pinned broken version with cbor2>=5.4.6 which ships a proper
+    # wheel and installs cleanly on Python 3.10 without any build step.
+    sed -i 's/^cbor2==.*/cbor2>=5.4.6/' "$REQ_FILE"
+    print_step "cbor2 version unpinned to >=5.4.6 (fixes Python 3.10 build failure)"
+
+    # Fix known gevent compatibility issue on Odoo 16-18
     if [[ "$OE_VERSION" =~ ^1[6-8]\.0$ ]]; then
-        print_warn "Detected Odoo $OE_VERSION — pinning gevent to 23.9.1 for compatibility."
+        print_warn "Detected Odoo $OE_VERSION -- pinning gevent to 23.9.1 for compatibility."
         sed -i '/gevent/d' "$REQ_FILE"
         sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install -r "$REQ_FILE" || print_warn "Some packages failed."
         sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install "gevent==23.9.1"
@@ -542,7 +554,7 @@ step_create_config() {
 
     sudo tee "$CONFIG_FILE" > /dev/null <<EOF
 [options]
-master_password    = ${OE_SUPERADMIN}
+admin_passwd       = ${OE_SUPERADMIN}
 http_port          = ${OE_PORT}
 longpolling_port   = ${LONGPOLLING_PORT}
 logfile            = /var/log/${OE_USER}/${OE_USER}-server.log
