@@ -40,10 +40,10 @@ Unlike basic installation scripts, this toolkit implements **professional DevOps
 
 ```bash
 # Download installation script
-wget https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/main/install_odoo.sh
+wget https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/refs/heads/main/install_odoo.sh
 
 # Download deletion script
-wget https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/main/delete_odoo.sh
+wget https://raw.githubusercontent.com/IbrahimAljuhani/InstallOdooScript/refs/heads/main/delete_odoo.sh
 
 # Make executable
 chmod +x install_odoo.sh delete_odoo.sh
