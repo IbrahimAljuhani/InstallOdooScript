@@ -610,11 +610,27 @@ step_configure_nginx() {
     if ! check_nginx_installed; then
         print_step "Installing Nginx..."
         sudo apt install -y nginx || print_error "Failed to install Nginx."
-        sudo ufw allow 'Nginx Full' 2>/dev/null || true
         print_info "Nginx installed."
     else
         print_info "Nginx is already installed."
     fi
+
+    # ── UFW: Allow HTTP/HTTPS from Cloudflare IPs only ──────────────────
+    print_step "Configuring UFW to allow only Cloudflare IPs on ports 80/443..."
+    sudo ufw delete allow 'Nginx Full'  2>/dev/null || true
+    sudo ufw delete allow 'Nginx HTTP'  2>/dev/null || true
+    sudo ufw delete allow 'Nginx HTTPS' 2>/dev/null || true
+    sudo ufw delete allow 80/tcp        2>/dev/null || true
+    sudo ufw delete allow 443/tcp       2>/dev/null || true
+    for cfip in \
+        173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 \
+        141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 \
+        197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 \
+        104.24.0.0/14 172.64.0.0/13 131.0.72.0/22; do
+        sudo ufw allow from "$cfip" to any port 80  proto tcp 2>/dev/null || true
+        sudo ufw allow from "$cfip" to any port 443 proto tcp 2>/dev/null || true
+    done
+    print_security "UFW: HTTP/HTTPS allowed from Cloudflare IPs only."
 
     # Ensure www-data exists
     id www-data &>/dev/null || print_error "Nginx user 'www-data' not found."
@@ -623,6 +639,45 @@ step_configure_nginx() {
     if ! grep -q "client_max_body_size 1G;" /etc/nginx/nginx.conf; then
         sudo sed -i '/http {/a \    client_max_body_size 1G;' /etc/nginx/nginx.conf
         print_info "Set global client_max_body_size = 1G"
+    fi
+
+    # Global: server_tokens off
+    if ! grep -q "server_tokens off;" /etc/nginx/nginx.conf; then
+        sudo sed -i '/http {/a \    server_tokens off;' /etc/nginx/nginx.conf
+        print_info "server_tokens off — Nginx version hidden."
+    fi
+
+    # ── Default server block: reject direct IP access ────────────────────
+    if [ ! -f /etc/nginx/ssl/dummy.crt ]; then
+        print_step "Creating dummy SSL certificate for default block..."
+        sudo mkdir -p /etc/nginx/ssl
+        sudo openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+            -keyout /etc/nginx/ssl/dummy.key \
+            -out    /etc/nginx/ssl/dummy.crt \
+            -subj "/CN=localhost" 2>/dev/null
+        print_security "Dummy certificate created."
+    fi
+    # Remove Nginx default site (conflicts with our default block)
+    sudo rm -f /etc/nginx/sites-enabled/default
+    sudo rm -f /etc/nginx/sites-available/default
+
+    if [ ! -f /etc/nginx/sites-available/000-default-block ]; then
+        sudo tee /etc/nginx/sites-available/000-default-block > /dev/null <<'DEFAULTEOF'
+# Block all direct IP access — return 444 (no response)
+server {
+    listen 80  default_server;
+    listen [::]:80  default_server;
+    listen 443 ssl  default_server;
+    listen [::]:443 ssl default_server;
+    ssl_certificate     /etc/nginx/ssl/dummy.crt;
+    ssl_certificate_key /etc/nginx/ssl/dummy.key;
+    server_name _;
+    return 444;
+}
+DEFAULTEOF
+        sudo ln -sf /etc/nginx/sites-available/000-default-block \
+                    /etc/nginx/sites-enabled/000-default-block
+        print_security "Default block: direct IP access will return 444."
     fi
 
     # WebSocket global map (in conf.d)
@@ -654,6 +709,7 @@ WSMAP
     sudo tee "$NGINX_SITE" > /dev/null <<NGINXEOF
 # ──────────────────────────────────────────────────────────────────────────
 # Nginx Configuration for Odoo Instance: ${OE_USER}
+# Domain: ${NGINX_DOMAIN}
 # ──────────────────────────────────────────────────────────────────────────
 
 upstream ${UPSTREAM_MAIN} {
@@ -672,11 +728,28 @@ proxy_cache_path /var/cache/nginx/odoo_static_${OE_USER}
     inactive=60m
     max_size=2g;
 
+# ── HTTPS ──────────────────────────────────────────────────────────────────
 server {
-    listen 80;
-    listen [::]:80;
+    listen 443 ssl;
+    listen [::]:443 ssl;
     server_name ${NGINX_DOMAIN};
     charset utf-8;
+
+    # ── SSL (will be managed by Certbot if SSL enabled) ─────────────────
+    # ssl_certificate and ssl_certificate_key added by Certbot
+
+    # ── Security ────────────────────────────────────────────────────────
+    server_tokens off;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # ── Reject requests not matching domain (block direct IP access) ─────
+    if (\$host != "${NGINX_DOMAIN}") {
+        return 444;
+    }
 
     # ── ACME Challenge (Let's Encrypt) ──────────────────────────────────
     location ^~ /.well-known/acme-challenge/ {
@@ -692,6 +765,12 @@ server {
         return 403;
     }
 
+    # ── Block Sensitive Files ────────────────────────────────────────────
+    location ~* \.(env|git|svn|htaccess|htpasswd|ini|log|sh|sql|conf|bak)\$ {
+        deny all;
+        return 404;
+    }
+
     # ── Static Assets (cached) ──────────────────────────────────────────
     location /web/static/ {
         proxy_pass http://${UPSTREAM_MAIN};
@@ -699,6 +778,7 @@ server {
         proxy_cache_valid 200 7d;
         proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
         proxy_ignore_headers Cache-Control Expires;
+        add_header X-Cache-Status \$upstream_cache_status;
         expires 7d;
         add_header Cache-Control "public, max-age=604800" always;
     }
@@ -714,6 +794,7 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 3600;
+        proxy_send_timeout 3600;
         proxy_buffering off;
     }
 
@@ -728,6 +809,7 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 3600;
+        proxy_send_timeout 3600;
         proxy_buffering off;
     }
 
@@ -744,10 +826,30 @@ server {
         proxy_send_timeout 300;
         proxy_read_timeout 600;
         client_max_body_size 128M;
+        proxy_hide_header X-Powered-By;
+        proxy_hide_header Server;
     }
 
     access_log /var/log/nginx/${OE_USER}_access.log;
     error_log  /var/log/nginx/${OE_USER}_error.log warn;
+}
+
+# ── HTTP → HTTPS Redirect ──────────────────────────────────────────────────
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${NGINX_DOMAIN};
+
+    location ^~ /.well-known/acme-challenge/ {
+        allow all;
+        root /var/www/certbot;
+        default_type "text/plain";
+        try_files \$uri =404;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
 }
 NGINXEOF
 
