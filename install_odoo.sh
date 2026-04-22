@@ -2,12 +2,12 @@
 ################################################################################
 # Odoo Multi-Instance Installation Script - Professional Edition
 # Author: Ibrahim Aljuhani
-# Version: 3.0.0
+# Version: 3.0.1
 # Supports: Ubuntu 22.04+
 # Architecture: Configuration-First Pattern (Gather → Validate → Execute)
 # Modes: Interactive | Non-Interactive | Dry-Run
 ################################################################################
-set -e
+set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -22,6 +22,8 @@ PURPLE='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+trap 'echo -e "${RED}[FATAL]${NC} Script aborted unexpectedly at line $LINENO — check the output above." >&2' ERR
+
 print_info()      { echo -e "${GREEN}[✔ DONE ]${NC} $1"; }
 print_warn()      { echo -e "${YELLOW}[⚠ WARN ]${NC} $1"; }
 print_error()     { echo -e "${RED}[✖ ERROR]${NC} $1"; exit 1; }
@@ -33,7 +35,7 @@ print_banner() {
     echo -e "${BLUE}"
     echo "╔══════════════════════════════════════════════════════════════════╗"
     echo "║         Odoo Multi-Instance Installer - Professional Edition     ║"
-    echo "║                        Version 3.0.0                            ║"
+    echo "║                        Version 3.0.1                            ║"
     echo "╚══════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
@@ -62,9 +64,9 @@ NGINX_CHOICE="n"
 NGINX_DOMAIN=""
 SSL_CHOICE="n"
 LETSENCRYPT_EMAIL=""
-INSTALL_WKHTMLTOPDF="True"
-GENERATE_RANDOM_PASSWORD="True"
+INSTALL_WKHTMLTOPDF="False"
 OE_SUPERADMIN=""
+NGINX_ACCESS_URL=""
 
 SERVER_IP=$(hostname -I | awk '{print $1}')
 SECRETS_FILE="/root/odoo-secrets.txt"
@@ -115,6 +117,7 @@ parse_arguments() {
             --domain)           NGINX_DOMAIN="$2"; shift 2 ;;
             --ssl)              SSL_CHOICE="y"; shift ;;
             --email)            LETSENCRYPT_EMAIL="$2"; shift 2 ;;
+            --wkhtmltopdf)      INSTALL_WKHTMLTOPDF="True"; shift ;;
             --help|-h)          show_help; exit 0 ;;
             *)                  shift ;;
         esac
@@ -131,21 +134,23 @@ show_help() {
     echo "  Non-Interactive:"
     echo "    sudo ./install_odoo.sh --non-interactive \\"
     echo "      --instance <name> --version <17.0|18.0|19.0> --port <port> \\"
-    echo "      [--nginx] [--domain <domain>] [--ssl] [--email <email>]"
+    echo "      [--nginx] [--domain <domain>] [--ssl] [--email <email>] \\"
+    echo "      [--wkhtmltopdf]"
     echo ""
     echo "  Dry-Run (simulate only):"
     echo "    sudo ./install_odoo.sh --dry-run --instance test --version 18.0 --port 8069"
     echo ""
     echo -e "${BOLD}Options:${NC}"
-    printf "  %-20s %s\n" "--instance"   "Instance name (e.g., odoo-prod)"
-    printf "  %-20s %s\n" "--version"    "Odoo version: 19.0 | 18.0 | 17.0 | 16.0"
-    printf "  %-20s %s\n" "--port"       "HTTP port (default: 8069)"
-    printf "  %-20s %s\n" "--nginx"      "Enable Nginx reverse proxy"
-    printf "  %-20s %s\n" "--domain"     "Domain name for Nginx"
-    printf "  %-20s %s\n" "--ssl"        "Enable Let's Encrypt SSL"
-    printf "  %-20s %s\n" "--email"      "Email for SSL notifications"
-    printf "  %-20s %s\n" "--dry-run"    "Simulate without making changes"
-    printf "  %-20s %s\n" "--help, -h"   "Show this help message"
+    printf "  %-22s %s\n" "--instance"      "Instance name (e.g., odoo-prod)"
+    printf "  %-22s %s\n" "--version"       "Odoo version: 19.0 | 18.0 | 17.0"
+    printf "  %-22s %s\n" "--port"          "HTTP port (default: 8069)"
+    printf "  %-22s %s\n" "--nginx"         "Enable Nginx reverse proxy"
+    printf "  %-22s %s\n" "--domain"        "Domain name for Nginx"
+    printf "  %-22s %s\n" "--ssl"           "Enable Let's Encrypt SSL"
+    printf "  %-22s %s\n" "--email"         "Email for SSL notifications"
+    printf "  %-22s %s\n" "--wkhtmltopdf"   "Attempt wkhtmltopdf install (official pkg: Ubuntu 22.04/Jammy only)"
+    printf "  %-22s %s\n" "--dry-run"       "Simulate without making changes"
+    printf "  %-22s %s\n" "--help, -h"      "Show this help message"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -162,7 +167,7 @@ handle_existing_instance() {
     echo -e "${NC}"
 
     # Offer backup before deletion
-    read -p "  Create automatic backup before deletion? (y/N): " BACKUP_CHOICE
+    read -rp "  Create automatic backup before deletion? (y/N): " BACKUP_CHOICE
     BACKUP_CHOICE=$(echo "$BACKUP_CHOICE" | tr '[:upper:]' '[:lower:]')
     if [[ "$BACKUP_CHOICE" == "y" || "$BACKUP_CHOICE" == "yes" ]]; then
         sudo mkdir -p "$BACKUP_DIR"
@@ -173,23 +178,34 @@ handle_existing_instance() {
         sudo tar -czf "$BACKUP_FILE" \
             "/$user" \
             "/etc/${user}-server.conf" \
-            "/var/log/$user" 2>/dev/null || true
+            "/var/log/$user" 2>/dev/null \
+            || print_warn "Filesystem backup may be incomplete."
 
         print_step "Creating PostgreSQL backup: $DB_BACKUP"
-        sudo -u postgres pg_dump "$user" > "$DB_BACKUP" 2>/dev/null || true
+        sudo -u postgres pg_dump "$user" > "$DB_BACKUP" 2>/dev/null \
+            || print_warn "Database backup may have failed."
 
         print_info "Full backup saved to: $BACKUP_DIR"
     fi
 
     # Ask about PostgreSQL separately
-    read -p "  Also delete the PostgreSQL database and user? (y/N): " DROP_DB_CHOICE
+    read -rp "  Also delete the PostgreSQL database and user? (y/N): " DROP_DB_CHOICE
     local DROP_POSTGRES=false
     [[ "$(echo "$DROP_DB_CHOICE" | tr '[:upper:]' '[:lower:]')" =~ ^(y|yes)$ ]] && DROP_POSTGRES=true
 
+    # Read port BEFORE removing config file (needed for UFW cleanup later)
+    local oe_port
+    oe_port=$(grep "^http_port" "/etc/${user}-server.conf" 2>/dev/null \
+              | awk -F'=' '{print $2}' | tr -d ' ' || true)
+
     print_step "Stopping Odoo service and killing related processes..."
-    sudo systemctl stop "${user}-server"  2>/dev/null || true
+    sudo systemctl stop "${user}-server" 2>/dev/null || true
+    for i in $(seq 1 5); do
+        sleep 2
+        sudo systemctl is-active --quiet "${user}-server" 2>/dev/null || break
+    done
     sudo systemctl kill --signal=SIGKILL "${user}-server" 2>/dev/null || true
-    sleep 2
+    sleep 1
     sudo pkill -9 -u "$user" 2>/dev/null || true
 
     print_step "Removing systemd service and config files..."
@@ -215,9 +231,27 @@ handle_existing_instance() {
         print_info "PostgreSQL database and user preserved."
     fi
 
-    # Remove Nginx config if present
+    # Remove Nginx config if present and reload
     sudo rm -f "/etc/nginx/sites-available/$user"
     sudo rm -f "/etc/nginx/sites-enabled/$user"
+    if command -v nginx &>/dev/null && sudo nginx -t >/dev/null 2>&1; then
+        sudo systemctl reload nginx 2>/dev/null || true
+        print_info "Nginx reloaded."
+    fi
+
+    # Remove Nginx static cache
+    sudo rm -rf "/var/cache/nginx/odoo_static_${user}"
+    print_info "Nginx static cache removed."
+
+    # Remove logrotate config
+    sudo rm -f "/etc/logrotate.d/${user}-odoo"
+    print_info "Logrotate config removed."
+
+    # Remove UFW deny rule added by Nginx setup
+    if [[ -n "$oe_port" ]]; then
+        sudo ufw delete deny "$oe_port" 2>/dev/null || true
+        print_info "UFW rule for port $oe_port cleaned up."
+    fi
 
     print_info "Instance '$user' removed successfully."
 }
@@ -232,9 +266,11 @@ gather_inputs() {
     # ── Instance Name ──────────────────────────────────────────────────────
     print_section "Instance Configuration"
     while true; do
-        read -p "  Instance name (e.g., odoo-prod): " OE_USER
+        read -rp "  Instance name (e.g., odoo-prod): " OE_USER
         if ! validate_instance_name "$OE_USER"; then
-            print_error "Invalid name. Must start with a lowercase letter and contain only: a-z 0-9 - _"
+            print_warn "Invalid name. Must start with a lowercase letter and contain only: a-z 0-9 - _"
+            OE_USER=""
+            continue
         fi
         if check_instance_exists "$OE_USER"; then
             echo ""
@@ -242,7 +278,7 @@ gather_inputs() {
             echo "  What would you like to do?"
             echo "    1) Delete the existing instance and reinstall"
             echo "    2) Enter a different instance name"
-            read -p "  Choice (1/2): " CONFLICT_CHOICE
+            read -rp "  Choice (1/2): " CONFLICT_CHOICE
             case $CONFLICT_CHOICE in
                 1) handle_existing_instance "$OE_USER"; break ;;
                 2) OE_USER=""; continue ;;
@@ -258,16 +294,14 @@ gather_inputs() {
     echo "    1) 19.0  — Latest"
     echo "    2) 18.0  — Stable (recommended)"
     echo "    3) 17.0  — LTS"
-    echo "    4) 16.0  — Legacy"
     echo ""
     while true; do
-        read -p "  Select version (1-4): " VER_CHOICE
+        read -rp "  Select version (1-3): " VER_CHOICE
         case $VER_CHOICE in
             1) OE_VERSION="19.0"; break ;;
             2) OE_VERSION="18.0"; break ;;
             3) OE_VERSION="17.0"; break ;;
-            4) OE_VERSION="16.0"; break ;;
-            *) print_warn "Please select 1, 2, 3, or 4." ;;
+            *) print_warn "Please select 1, 2, or 3." ;;
         esac
     done
     print_info "Selected Odoo version: $OE_VERSION"
@@ -275,7 +309,7 @@ gather_inputs() {
     # ── HTTP Port ──────────────────────────────────────────────────────────
     print_section "Port Configuration"
     while true; do
-        read -p "  HTTP port [default: 8069]: " OE_PORT
+        read -rp "  HTTP port [default: 8069]: " OE_PORT
         OE_PORT="${OE_PORT:-8069}"
         if ! validate_port_range "$OE_PORT"; then
             print_warn "Port must be between 1024 and 65535."
@@ -283,7 +317,7 @@ gather_inputs() {
         fi
         if check_port_in_use "$OE_PORT"; then
             print_warn "Port $OE_PORT is already in use!"
-            read -p "  Enter a different port: " OE_PORT
+            read -rp "  Enter a different port: " OE_PORT
             continue
         fi
         break
@@ -296,22 +330,69 @@ gather_inputs() {
 
     # ── Nginx ──────────────────────────────────────────────────────────────
     print_section "Nginx Reverse Proxy"
-    read -p "  Configure Nginx for this instance? (y/N): " NGINX_CHOICE
+    read -rp "  Configure Nginx for this instance? (y/N): " NGINX_CHOICE
     NGINX_CHOICE=$(echo "$NGINX_CHOICE" | tr '[:upper:]' '[:lower:]')
 
     if [[ "$NGINX_CHOICE" == "y" || "$NGINX_CHOICE" == "yes" ]]; then
-        read -p "  Domain name [default: $SERVER_IP]: " NGINX_DOMAIN
+        read -rp "  Domain name [default: $SERVER_IP]: " NGINX_DOMAIN
         NGINX_DOMAIN="${NGINX_DOMAIN:-$SERVER_IP}"
 
-        read -p "  Enable Let's Encrypt SSL? (y/N): " SSL_CHOICE
+        read -rp "  Enable Let's Encrypt SSL? (y/N): " SSL_CHOICE
         SSL_CHOICE=$(echo "$SSL_CHOICE" | tr '[:upper:]' '[:lower:]')
 
         if [[ "$SSL_CHOICE" == "y" || "$SSL_CHOICE" == "yes" ]]; then
             while true; do
-                read -p "  Email for SSL notifications: " LETSENCRYPT_EMAIL
-                [[ -n "$LETSENCRYPT_EMAIL" ]] && break
-                print_warn "Email is required for Let's Encrypt."
+                read -rp "  Email for SSL notifications: " LETSENCRYPT_EMAIL
+                if [[ "$LETSENCRYPT_EMAIL" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; then
+                    break
+                fi
+                print_warn "Please enter a valid email address (e.g., user@example.com)."
             done
+        fi
+    fi
+
+    # ── wkhtmltopdf ────────────────────────────────────────────────────────
+    print_section "PDF Rendering (wkhtmltopdf)"
+    echo "  Odoo includes a built-in PDF renderer that works out of the box."
+    echo "  wkhtmltopdf is an optional tool that may improve PDF quality"
+    echo "  for complex reports, but it is deprecated (last release: 2023)."
+    echo ""
+    local _WK_CODENAME _WK_ARCH
+    _WK_CODENAME=$(lsb_release -cs 2>/dev/null || echo "unknown")
+    _WK_ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
+
+    if [[ "${_WK_CODENAME}_${_WK_ARCH}" =~ ^jammy_(amd64|arm64)$ ]]; then
+        # ── Supported system ──
+        read -rp "  Install wkhtmltopdf? (y/N): " WKHTML_CHOICE
+        WKHTML_CHOICE=$(echo "$WKHTML_CHOICE" | tr '[:upper:]' '[:lower:]')
+        if [[ "$WKHTML_CHOICE" =~ ^(y|yes)$ ]]; then
+            INSTALL_WKHTMLTOPDF="True"
+            print_info "wkhtmltopdf will be installed."
+        else
+            INSTALL_WKHTMLTOPDF="False"
+            print_info "Skipping wkhtmltopdf — Odoo built-in PDF renderer will be used."
+        fi
+    else
+        # ── Unsupported system — show detailed warning ──
+        echo "  ┌──────────────────────────────────────────────────────────────┐"
+        echo "  │  ⚠️  WARNING: No Official Package for Your System            │"
+        echo "  ├──────────────────────────────────────────────────────────────┤"
+        printf "  │  %-62s│\n" "  Detected: Ubuntu ${_WK_CODENAME} (${_WK_ARCH})"
+        echo "  │  Official packages exist only for Ubuntu 22.04 (Jammy).     │"
+        echo "  │                                                              │"
+        echo "  │  • Project archived — no updates since May 2023.            │"
+        echo "  │  • Installing on this system may cause dependency errors.   │"
+        echo "  │  • Odoo works perfectly without it (built-in renderer).     │"
+        echo "  └──────────────────────────────────────────────────────────────┘"
+        echo ""
+        read -rp "  Continue installing wkhtmltopdf at your own risk? (y/N): " WKHTML_CHOICE
+        WKHTML_CHOICE=$(echo "$WKHTML_CHOICE" | tr '[:upper:]' '[:lower:]')
+        if [[ "$WKHTML_CHOICE" =~ ^(y|yes)$ ]]; then
+            INSTALL_WKHTMLTOPDF="True"
+            print_warn "wkhtmltopdf installation will be attempted at your own risk."
+        else
+            INSTALL_WKHTMLTOPDF="False"
+            print_info "Skipping wkhtmltopdf — Odoo built-in PDF renderer will be used."
         fi
     fi
 }
@@ -328,7 +409,8 @@ validate_configuration() {
     printf  "${BLUE}║${NC}  %-22s : %-40s ${BLUE}║${NC}\n" "Odoo Version"      "$OE_VERSION"
     printf  "${BLUE}║${NC}  %-22s : %-40s ${BLUE}║${NC}\n" "HTTP Port"         "$OE_PORT"
     printf  "${BLUE}║${NC}  %-22s : %-40s ${BLUE}║${NC}\n" "Longpolling Port"  "$LONGPOLLING_PORT"
-    printf  "${BLUE}║${NC}  %-22s : %-40s ${BLUE}║${NC}\n" "Nginx"             "${NGINX_CHOICE:-no}"
+    local _nginx_disp="No"; [[ "$NGINX_CHOICE" =~ ^(y|yes)$ ]] && _nginx_disp="Yes"
+    printf  "${BLUE}║${NC}  %-22s : %-40s ${BLUE}║${NC}\n" "Nginx"             "$_nginx_disp"
     if [[ "$NGINX_CHOICE" =~ ^(y|yes)$ ]]; then
         printf "${BLUE}║${NC}  %-22s : %-40s ${BLUE}║${NC}\n" "Domain"           "$NGINX_DOMAIN"
         if [[ "$SSL_CHOICE" =~ ^(y|yes)$ ]]; then
@@ -338,6 +420,8 @@ validate_configuration() {
             printf "${BLUE}║${NC}  %-22s : %-40s ${BLUE}║${NC}\n" "SSL"           "None"
         fi
     fi
+    local _wk_disp="No (built-in renderer)"; [[ "$INSTALL_WKHTMLTOPDF" == "True" ]] && _wk_disp="Yes (if supported)"
+    printf  "${BLUE}║${NC}  %-22s : %-40s ${BLUE}║${NC}\n" "wkhtmltopdf"      "$_wk_disp"
     echo -e "${BLUE}╚══════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
 
@@ -346,7 +430,7 @@ validate_configuration() {
         return 0
     fi
 
-    read -p "Proceed with installation? (y/N): " CONFIRM
+    read -rp "Proceed with installation? (y/N): " CONFIRM
     CONFIRM=$(echo "$CONFIRM" | tr '[:upper:]' '[:lower:]')
     if [[ "$CONFIRM" != "y" && "$CONFIRM" != "yes" ]]; then
         print_info "Installation cancelled."
@@ -372,7 +456,7 @@ execute_step() {
 #  Installation Steps
 # ─────────────────────────────────────────────────────────────────────────────
 step_check_tools() {
-    for cmd in wget git gpg curl bc lsb_release; do
+    for cmd in wget git gpg curl lsb_release; do
         command -v "$cmd" &>/dev/null || print_error "'$cmd' is required but not installed."
     done
     print_info "All required tools are present."
@@ -381,7 +465,9 @@ step_check_tools() {
 step_check_ubuntu() {
     UBUNTU_VERSION=$(lsb_release -r -s 2>/dev/null || echo "unknown")
     [[ "$UBUNTU_VERSION" == "unknown" ]] && print_error "Cannot detect Ubuntu version."
-    if (( $(echo "$UBUNTU_VERSION >= 22.04" | bc -l) )); then
+    local major minor
+    IFS='.' read -r major minor _ <<< "$UBUNTU_VERSION"
+    if (( major > 22 || (major == 22 && minor >= 4) )); then
         print_info "Ubuntu $UBUNTU_VERSION is supported."
     else
         print_error "Ubuntu 22.04+ is required. Detected: $UBUNTU_VERSION"
@@ -404,7 +490,7 @@ step_install_packages() {
         fonts-dejavu-core fonts-font-awesome fonts-roboto-unhinted \
         adduser lsb-base vim \
         python3 python3-dev python3-venv python3-wheel \
-        lsb-release bc
+        lsb-release
     print_info "System packages installed."
 }
 
@@ -412,34 +498,87 @@ step_install_nodejs() {
     curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - \
         || print_error "Failed to add NodeSource repository."
     sudo apt install -y nodejs || print_error "Failed to install Node.js 20."
-    sudo npm install -g rtlcss
+    sudo npm install -g rtlcss || print_error "Failed to install rtlcss."
     print_info "Node.js 20 LTS and rtlcss installed."
 }
 
 step_install_wkhtmltopdf() {
-    if [ "$INSTALL_WKHTMLTOPDF" != "True" ]; then
-        print_warn "Skipping wkhtmltopdf installation."
+    if [[ "$INSTALL_WKHTMLTOPDF" != "True" ]]; then
+        print_info "wkhtmltopdf skipped — Odoo built-in PDF renderer will be used."
         return
     fi
-    local WKHTML_DEB="/tmp/wkhtmltox_${OE_USER}.deb"
-    local WKHTML_URL="https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.jammy_amd64.deb"
-    wget -q "$WKHTML_URL" -O "$WKHTML_DEB" || print_error "Failed to download wkhtmltopdf."
-    sudo gdebi -n "$WKHTML_DEB"            || print_error "Failed to install wkhtmltopdf."
+
+    local CODENAME ARCH WKHTML_URL WKHTML_DEB
+    CODENAME=$(lsb_release -cs 2>/dev/null || echo "unknown")
+    ARCH=$(dpkg --print-architecture 2>/dev/null || echo "amd64")
+    WKHTML_DEB="/tmp/wkhtmltox_${OE_USER}.deb"
+    local BASE_URL="https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3"
+
+    case "${CODENAME}_${ARCH}" in
+        jammy_amd64)
+            WKHTML_URL="${BASE_URL}/wkhtmltox_0.12.6.1-3.jammy_amd64.deb"
+            ;;
+        jammy_arm64)
+            WKHTML_URL="${BASE_URL}/wkhtmltox_0.12.6.1-3.jammy_arm64.deb"
+            ;;
+        *_amd64)
+            # User chose to proceed at own risk on unsupported amd64 system
+            print_warn "No official package for '${CODENAME}'. Attempting jammy_amd64 build at your own risk..."
+            WKHTML_URL="${BASE_URL}/wkhtmltox_0.12.6.1-3.jammy_amd64.deb"
+            ;;
+        *_arm64)
+            # User chose to proceed at own risk on unsupported arm64 system
+            print_warn "No official package for '${CODENAME}'. Attempting jammy_arm64 build at your own risk..."
+            WKHTML_URL="${BASE_URL}/wkhtmltox_0.12.6.1-3.jammy_arm64.deb"
+            ;;
+        *)
+            print_warn "wkhtmltopdf: unsupported architecture '${ARCH}'. Skipping."
+            print_warn "Odoo built-in PDF renderer will be used instead."
+            return
+            ;;
+    esac
+
+    # Ensure gdebi is available before attempting installation
+    if ! command -v gdebi &>/dev/null; then
+        print_step "Installing gdebi-core (required for .deb installation)..."
+        sudo apt-get install -y -q gdebi-core \
+            || { print_warn "Could not install gdebi-core. Skipping wkhtmltopdf."; return; }
+    fi
+
+    print_step "Downloading wkhtmltopdf for Ubuntu ${CODENAME} / ${ARCH}..."
+    if ! wget -q "$WKHTML_URL" -O "$WKHTML_DEB"; then
+        print_warn "Failed to download wkhtmltopdf. Skipping — built-in PDF renderer will be used."
+        rm -f "$WKHTML_DEB"
+        return
+    fi
+
+    if ! sudo gdebi -n "$WKHTML_DEB"; then
+        print_warn "Failed to install wkhtmltopdf (dependency error likely). Skipping — built-in PDF renderer will be used."
+        rm -f "$WKHTML_DEB"
+        return
+    fi
+
     rm -f "$WKHTML_DEB"
-    print_info "wkhtmltopdf 0.12.6.1-3 installed."
+
+    if command -v wkhtmltopdf &>/dev/null; then
+        print_info "wkhtmltopdf installed: $(wkhtmltopdf --version 2>/dev/null | head -n1)"
+    else
+        print_warn "wkhtmltopdf package applied but binary not found in PATH. Check manually."
+    fi
 }
 
 step_setup_postgresql() {
-    if dpkg -l 2>/dev/null | grep -q "postgresql-16"; then
+    if dpkg -l postgresql-16 2>/dev/null | grep -q "^ii"; then
         print_info "PostgreSQL 16 is already installed."
-        systemctl is-active --quiet postgresql || {
+        sudo systemctl is-active --quiet postgresql || {
             sudo systemctl start postgresql
             sudo systemctl enable postgresql
         }
     else
         curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
             | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/postgresql.gpg > /dev/null
+            | sudo tee /usr/share/keyrings/postgresql.gpg > /dev/null \
+            || print_error "Failed to import PostgreSQL GPG key. Check network and try again."
         echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] \
 http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
@@ -453,7 +592,7 @@ step_create_pg_user() {
     if ! sudo -u postgres psql -d postgres -tAc \
         "SELECT 1 FROM pg_roles WHERE rolname='$OE_USER'" 2>/dev/null | grep -q 1
     then
-        sudo -u postgres createuser -s "$OE_USER"
+        sudo -u postgres createuser --createdb "$OE_USER"
         print_info "PostgreSQL user '$OE_USER' created."
     else
         print_warn "PostgreSQL user '$OE_USER' already exists."
@@ -474,6 +613,20 @@ step_setup_log_dir() {
     sudo mkdir -p "/var/log/$OE_USER"
     sudo chown "$OE_USER:$OE_USER" "/var/log/$OE_USER"
     print_info "Log directory: /var/log/$OE_USER"
+
+    # Configure automatic log rotation
+    sudo tee "/etc/logrotate.d/${OE_USER}-odoo" > /dev/null <<EOF
+/var/log/${OE_USER}/${OE_USER}-server.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    copytruncate
+}
+EOF
+    print_info "Log rotation configured: /etc/logrotate.d/${OE_USER}-odoo"
 }
 
 step_clone_odoo() {
@@ -481,8 +634,11 @@ step_clone_odoo() {
     if [ -d "$OE_HOME_EXT" ]; then
         print_warn "Odoo source directory exists. Skipping clone."
     else
+        [[ "$OE_VERSION" == "19.0" ]] && \
+            print_warn "Odoo 19.0 is a development branch — may be unstable or not yet available."
         sudo -u "$OE_USER" git clone --depth 1 --branch "$OE_VERSION" \
-            https://github.com/odoo/odoo "$OE_HOME_EXT"
+            https://github.com/odoo/odoo "$OE_HOME_EXT" \
+            || print_error "Failed to clone Odoo $OE_VERSION. The branch may not exist yet."
         print_info "Odoo $OE_VERSION cloned."
     fi
 }
@@ -501,10 +657,10 @@ step_create_venv() {
     local VENV_PATH="/$OE_USER/venv"
     sudo -u "$OE_USER" python3 -m venv "$VENV_PATH"
 
-    print_step "Upgrading pip, setuptools, and wheel..."
+    print_info "Upgrading pip, setuptools, and wheel..."
     sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install --upgrade pip setuptools wheel
 
-    print_step "Installing extra required packages..."
+    print_info "Installing extra required packages..."
     sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install qifparse python-escpos pillow
     print_info "Python virtual environment ready: $VENV_PATH"
 }
@@ -521,16 +677,18 @@ step_install_python_deps() {
     # Fix: replace the pinned broken version with cbor2>=5.4.6 which ships a proper
     # wheel and installs cleanly on Python 3.10 without any build step.
     sed -i 's/^cbor2==.*/cbor2>=5.4.6/' "$REQ_FILE"
-    print_step "cbor2 version unpinned to >=5.4.6 (fixes Python 3.10 build failure)"
+    print_info "cbor2 version unpinned to >=5.4.6 (fixes Python 3.10 build failure)"
 
-    # Fix known gevent compatibility issue on Odoo 16-18
-    if [[ "$OE_VERSION" =~ ^1[6-8]\.0$ ]]; then
+    # Fix known gevent compatibility issue on Odoo 17.x and 18.x
+    if [[ "$OE_VERSION" =~ ^1[7-8]\.0$ ]]; then
         print_warn "Detected Odoo $OE_VERSION -- pinning gevent to 23.9.1 for compatibility."
         sed -i '/gevent/d' "$REQ_FILE"
-        sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install -r "$REQ_FILE" || print_warn "Some packages failed."
+        sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install -r "$REQ_FILE" \
+            || print_error "Failed to install Python dependencies. Check the output above."
         sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install "gevent==23.9.1"
     else
-        sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install -r "$REQ_FILE" || print_warn "Some packages failed."
+        sudo -u "$OE_USER" "$VENV_PATH/bin/pip" install -r "$REQ_FILE" \
+            || print_error "Failed to install Python dependencies. Check the output above."
     fi
 
     rm -f "$REQ_FILE"
@@ -542,16 +700,16 @@ step_create_config() {
     local VENV_PATH="/$OE_USER/venv"
     local CONFIG_FILE="/etc/${OE_USER}-server.conf"
 
-    if [ "$GENERATE_RANDOM_PASSWORD" == "True" ]; then
-        OE_SUPERADMIN=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | fold -w 20 | head -n 1)
-        echo "$(date '+%Y-%m-%d %H:%M:%S')  instance='$OE_USER'  master_password='$OE_SUPERADMIN'" \
-            >> "$SECRETS_FILE"
-        sudo chmod 600 "$SECRETS_FILE"
-    fi
+    local _raw_pass
+    _raw_pass=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9')
+    OE_SUPERADMIN="${_raw_pass:0:20}"
+    [ ${#OE_SUPERADMIN} -lt 16 ] && print_error "Failed to generate a secure admin password. Check openssl."
+    [ ! -f "$SECRETS_FILE" ] && install -m 600 /dev/null "$SECRETS_FILE"
+    echo "$(date '+%Y-%m-%d %H:%M:%S')  instance='$OE_USER'  master_password='$OE_SUPERADMIN'" \
+        >> "$SECRETS_FILE"
+    chmod 600 "$SECRETS_FILE"
 
-    sudo touch "$CONFIG_FILE"
-    sudo chmod 640 "$CONFIG_FILE"
-    sudo chown "$OE_USER:$OE_USER" "$CONFIG_FILE"
+    sudo install -m 640 -o "$OE_USER" -g "$OE_USER" /dev/null "$CONFIG_FILE"
 
     sudo tee "$CONFIG_FILE" > /dev/null <<EOF
 [options]
@@ -587,6 +745,9 @@ StandardOutput=journal
 StandardError=journal
 Restart=always
 RestartSec=5
+LimitNOFILE=65536
+PrivateTmp=yes
+NoNewPrivileges=yes
 
 [Install]
 WantedBy=multi-user.target
@@ -599,11 +760,16 @@ EOF
 
 step_start_service() {
     sudo systemctl start "${OE_USER}-server"
-    sleep 3
-    if ! sudo systemctl is-active --quiet "${OE_USER}-server"; then
-        print_error "Odoo service failed to start. Run: journalctl -u ${OE_USER}-server -n 50"
-    fi
-    print_info "Odoo service is running."
+    print_step "Waiting for Odoo service to become active (up to 60s)..."
+    for i in $(seq 1 20); do
+        sleep 3
+        if sudo systemctl is-active --quiet "${OE_USER}-server"; then
+            print_info "Odoo service is running (started in $((i * 3))s)."
+            return
+        fi
+        print_warn "Not ready yet... ($((i * 3))s elapsed)"
+    done
+    print_error "Odoo service did not start within 60 seconds. Run: journalctl -u ${OE_USER}-server -n 50"
 }
 
 step_configure_nginx() {
@@ -615,22 +781,56 @@ step_configure_nginx() {
         print_info "Nginx is already installed."
     fi
 
-    # ── UFW: Allow HTTP/HTTPS from Cloudflare IPs only ──────────────────
-    print_step "Configuring UFW to allow only Cloudflare IPs on ports 80/443..."
+    # ── UFW: Enable (if inactive) + Allow HTTP/HTTPS from Cloudflare only ─
+    print_step "Configuring UFW firewall..."
+    if ! sudo ufw status | grep -q "Status: active"; then
+        print_warn "UFW is inactive — enabling it now (port 22/SSH will be allowed first)."
+        sudo ufw allow 22/tcp 2>/dev/null || true
+        sudo ufw --force enable
+        print_security "UFW enabled."
+    fi
+
+    print_step "Fetching current Cloudflare IP ranges..."
+    CF_IPV4_LIST=$(curl -fsSL --max-time 10 https://www.cloudflare.com/ips-v4 2>/dev/null) || {
+        print_warn "Could not fetch Cloudflare IPs — using built-in fallback list."
+        CF_IPV4_LIST="173.245.48.0/20
+103.21.244.0/22
+103.22.200.0/22
+103.31.4.0/22
+141.101.64.0/18
+108.162.192.0/18
+190.93.240.0/20
+188.114.96.0/20
+197.234.240.0/22
+198.41.128.0/17
+162.158.0.0/15
+104.16.0.0/13
+104.24.0.0/14
+172.64.0.0/13
+131.0.72.0/22"
+    }
+
+    CF_IPV6_LIST=$(curl -fsSL --max-time 10 https://www.cloudflare.com/ips-v6 2>/dev/null) || {
+        print_warn "Could not fetch Cloudflare IPv6 IPs — skipping IPv6 rules."
+        CF_IPV6_LIST=""
+    }
+
     sudo ufw delete allow 'Nginx Full'  2>/dev/null || true
     sudo ufw delete allow 'Nginx HTTP'  2>/dev/null || true
     sudo ufw delete allow 'Nginx HTTPS' 2>/dev/null || true
     sudo ufw delete allow 80/tcp        2>/dev/null || true
     sudo ufw delete allow 443/tcp       2>/dev/null || true
-    for cfip in \
-        173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 \
-        141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 \
-        197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 \
-        104.24.0.0/14 172.64.0.0/13 131.0.72.0/22; do
+    while IFS= read -r cfip; do
+        [[ -z "$cfip" ]] && continue
         sudo ufw allow from "$cfip" to any port 80  proto tcp 2>/dev/null || true
         sudo ufw allow from "$cfip" to any port 443 proto tcp 2>/dev/null || true
-    done
-    print_security "UFW: HTTP/HTTPS allowed from Cloudflare IPs only."
+    done <<< "$CF_IPV4_LIST"
+    while IFS= read -r cfip; do
+        [[ -z "$cfip" ]] && continue
+        sudo ufw allow from "$cfip" to any port 80  proto tcp 2>/dev/null || true
+        sudo ufw allow from "$cfip" to any port 443 proto tcp 2>/dev/null || true
+    done <<< "$CF_IPV6_LIST"
+    print_security "UFW: HTTP/HTTPS allowed from Cloudflare IPs only (IPv4 + IPv6)."
 
     # Ensure www-data exists
     id www-data &>/dev/null || print_error "Nginx user 'www-data' not found."
@@ -681,7 +881,7 @@ DEFAULTEOF
     fi
 
     # WebSocket global map (in conf.d)
-    if ! grep -rq 'map \$http_upgrade \$connection_upgrade' \
+    if ! grep -rq 'map $http_upgrade $connection_upgrade' \
             /etc/nginx/nginx.conf /etc/nginx/conf.d/ 2>/dev/null; then
         sudo tee /etc/nginx/conf.d/ws_upgrade_map.conf > /dev/null <<'WSMAP'
 # WebSocket upgrade map — required for Odoo Bus, Live Chat, POS, IoT
@@ -735,16 +935,17 @@ server {
     server_name ${NGINX_DOMAIN};
     charset utf-8;
 
-    # ── SSL (will be managed by Certbot if SSL enabled) ─────────────────
-    # ssl_certificate and ssl_certificate_key added by Certbot
+    # ── SSL ─────────────────────────────────────────────────────────────
+    # Certbot will replace these two paths automatically when SSL is enabled.
+    # Until then, a self-signed dummy certificate is used so nginx -t passes.
+    ssl_certificate     /etc/nginx/ssl/dummy.crt;
+    ssl_certificate_key /etc/nginx/ssl/dummy.key;
 
     # ── Security ────────────────────────────────────────────────────────
-    server_tokens off;
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
-    add_header X-XSS-Protection "1; mode=block" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    # HSTS is added automatically after a valid SSL certificate is installed.
 
     # ── Reject requests not matching domain (block direct IP access) ─────
     if (\$host != "${NGINX_DOMAIN}") {
@@ -778,6 +979,11 @@ server {
         proxy_cache_valid 200 7d;
         proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
         proxy_ignore_headers Cache-Control Expires;
+        # Re-declare security headers — Nginx child blocks do NOT inherit
+        # add_header from the parent server block when they define their own.
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         add_header X-Cache-Status \$upstream_cache_status;
         expires 7d;
         add_header Cache-Control "public, max-age=604800" always;
@@ -825,7 +1031,6 @@ server {
         proxy_connect_timeout 60;
         proxy_send_timeout 300;
         proxy_read_timeout 600;
-        client_max_body_size 128M;
         proxy_hide_header X-Powered-By;
         proxy_hide_header Server;
     }
@@ -834,7 +1039,9 @@ server {
     error_log  /var/log/nginx/${OE_USER}_error.log warn;
 }
 
-# ── HTTP → HTTPS Redirect ──────────────────────────────────────────────────
+# ── HTTP ────────────────────────────────────────────────────────────────────
+# Without SSL: proxies directly to Odoo over HTTP.
+# With SSL:    Certbot (--redirect) converts this block to an HTTPS redirect.
 server {
     listen 80;
     listen [::]:80;
@@ -847,8 +1054,22 @@ server {
         try_files \$uri =404;
     }
 
+    # ── Block Database Manager (security) ───────────────────────────────
+    location ~* ^/web/database {
+        deny all;
+        return 403;
+    }
+
     location / {
-        return 301 https://\$host\$request_uri;
+        proxy_pass http://${UPSTREAM_MAIN};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_connect_timeout 60;
+        proxy_send_timeout 300;
+        proxy_read_timeout 600;
     }
 }
 NGINXEOF
@@ -878,9 +1099,25 @@ NGINXEOF
                 --domains "$NGINX_DOMAIN" \
                 --redirect 2>/dev/null; then
             print_info "SSL certificate installed. HTTPS enabled."
+            # Add HSTS now that a valid certificate is in place
+            local NGINX_SITE_SSL="/etc/nginx/sites-available/${OE_USER}"
+            if ! grep -q "Strict-Transport-Security" "$NGINX_SITE_SSL"; then
+                sudo sed -i \
+                    '/add_header Referrer-Policy/a\    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;' \
+                    "$NGINX_SITE_SSL"
+                # Verify HSTS was actually injected (sed silently skips if anchor not found)
+                if ! grep -q "Strict-Transport-Security" "$NGINX_SITE_SSL"; then
+                    print_warn "HSTS injection failed — anchor line not found. Add it manually to $NGINX_SITE_SSL"
+                elif sudo nginx -t >/dev/null 2>&1; then
+                    sudo systemctl reload nginx
+                    print_security "HSTS enabled (max-age=1 year, includeSubDomains)."
+                else
+                    print_warn "nginx -t failed after HSTS injection — HSTS not applied. Check config manually."
+                fi
+            fi
             NGINX_ACCESS_URL="https://${NGINX_DOMAIN}"
         else
-            print_warn "SSL certificate request failed. Falling back to HTTP."
+            print_warn "SSL certificate request failed. Site accessible via HTTP only."
             NGINX_ACCESS_URL="http://${NGINX_DOMAIN}"
         fi
 
@@ -980,15 +1217,16 @@ execute_installation() {
     echo -e "${PURPLE}"
     echo "  ─── Production Hardening Checklist ─────────────────────────────"
     echo ""
-    echo "  [ ] Disable the database manager (production only):"
+    if [[ "$NGINX_CHOICE" =~ ^(y|yes)$ ]]; then
+        echo "  [✓] Database manager blocked via Nginx (HTTP + HTTPS)"
+        echo "      location ~* ^/web/database { deny all; return 403; }"
+    else
+        echo "  [!] Database manager NOT blocked — Nginx not configured."
+        echo "      Add to Odoo config:  list_db = False"
+        echo "      Then:  sudo systemctl restart ${OE_USER}-server"
+    fi
     echo ""
-    echo "      Option A — Nginx (recommended):"
-    echo "        sudo nano /etc/nginx/sites-available/${OE_USER}"
-    echo "        # Ensure this block exists:"
-    echo "        #   location ~* ^/web/database { deny all; return 403; }"
-    echo "        sudo nginx -t && sudo systemctl reload nginx"
-    echo ""
-    echo "      Option B — Odoo config:"
+    echo "  [ ] Optional: Extra hardening via Odoo config (recommended for production):"
     echo "        sudo nano /etc/${OE_USER}-server.conf"
     echo "        # Add:  list_db = False"
     echo "        #        dbfilter = ^${OE_USER}\$"
@@ -996,7 +1234,7 @@ execute_installation() {
     echo ""
     echo "  [ ] Review UFW firewall rules:   sudo ufw status"
     echo "  [ ] Enable automatic OS updates: sudo dpkg-reconfigure unattended-upgrades"
-    echo "  [ ] Set up log rotation:         /etc/logrotate.d/"
+    echo "  [✓] Log rotation configured:     /etc/logrotate.d/${OE_USER}-odoo"
     echo ""
     echo "  ─────────────────────────────────────────────────────────────────"
     echo -e "${NC}"
@@ -1077,7 +1315,24 @@ main() {
         [[ -z "$OE_PORT" ]]    && OE_PORT="8069"
         validate_instance_name "$OE_USER" || print_error "Invalid instance name: $OE_USER"
         validate_port_range "$OE_PORT"    || print_error "Invalid port: $OE_PORT"
+        case "$OE_VERSION" in
+            17.0|18.0|19.0) ;;
+            *) print_error "Invalid version: '$OE_VERSION'. Supported: 17.0 | 18.0 | 19.0" ;;
+        esac
+        if [[ "$SSL_CHOICE" =~ ^(y|yes)$ ]] && ! [[ "$NGINX_CHOICE" =~ ^(y|yes)$ ]]; then
+            print_error "--ssl requires --nginx. SSL works only through Nginx reverse proxy."
+        fi
+        if [[ "$SSL_CHOICE" =~ ^(y|yes)$ ]] && [[ -z "$LETSENCRYPT_EMAIL" ]]; then
+            print_error "--email is required when --ssl is enabled."
+        fi
+        if [[ "$NGINX_CHOICE" =~ ^(y|yes)$ ]] && [[ -z "$NGINX_DOMAIN" ]]; then
+            NGINX_DOMAIN="$SERVER_IP"
+            print_warn "No --domain specified. Using server IP: $SERVER_IP"
+        fi
         LONGPOLLING_PORT=$((OE_PORT + 3))
+        if check_port_in_use "$LONGPOLLING_PORT"; then
+            print_warn "Longpolling port $LONGPOLLING_PORT is already in use. Live features may not work."
+        fi
     fi
 
     validate_configuration

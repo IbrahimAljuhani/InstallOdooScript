@@ -28,30 +28,6 @@ print_warn()  { echo -e "${YELLOW}[!]${RESET} $1" >&2; }
 print_error() { echo -e "${RED}[✗]${RESET} $1" >&2; exit 1; }
 print_step()  { echo -e "\n${BLUE}${BOLD}==> $1${RESET}" >&2; }
 
-show_progress() {
-    local msg="$1"
-    local cmd="$2"
-    echo -ne "  $msg ... " >&2
-    (
-        eval "$cmd" > /dev/null 2>&1 &
-        local pid=$!
-        local spin='|/-\\'
-        local i=0
-        while kill -0 "$pid" 2>/dev/null; do
-            i=$(( (i+1) % 4 ))
-            printf "\b${spin:$i:1}" >&2
-            sleep 0.1
-        done
-        wait "$pid"
-        if [ $? -eq 0 ]; then
-            echo -e "\b${GREEN}✓${RESET}" >&2
-        else
-            echo -e "\b${RED}✗${RESET}" >&2
-            print_error "Operation failed during: $msg"
-        fi
-    )
-}
-
 # -----------------------------
 # 🚫 Prevent root execution
 # -----------------------------
@@ -107,20 +83,20 @@ validate_instance_name() {
 # -----------------------------
 choose_odoo_version() {
     echo -e "${BOLD}Choose Odoo version:${RESET}" >&2
-    echo "1) 18.0 (Stable)"
-    echo "2) 17.0 (Stable)"
-    echo "3) 19.0 (Development - Use at your own risk)"
+    echo "1) 19.0 (Development - Use at your own risk)"
+    echo "2) 18.0 (Stable - Recommended)"
+    echo "3) 17.0 (LTS)"
     local choice
     while true; do
         read -rp "Enter choice (1-3): " choice
         case "$choice" in
-            1) ODOO_VERSION="18.0"; break ;;
-            2) ODOO_VERSION="17.0"; break ;;
-            3) 
+            1)
                 ODOO_VERSION="19.0"
-                print_warn "⚠️  Odoo 19.0 is still in development. May not have official Docker files yet."
+                print_warn "⚠️  Odoo 19.0 is still in development. May not have official Docker image yet."
                 break
                 ;;
+            2) ODOO_VERSION="18.0"; break ;;
+            3) ODOO_VERSION="17.0"; break ;;
             *) echo "Invalid choice. Try again." ;;
         esac
     done
@@ -138,7 +114,9 @@ prepare_install_dir() {
 # 🔑 Generate random password
 # -----------------------------
 generate_password() {
-    openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n1
+    local _raw
+    _raw=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9')
+    echo "${_raw:0:20}"
 }
 
 # -----------------------------
@@ -147,11 +125,11 @@ generate_password() {
 check_port() {
     local port="$1"
     if command -v ss &>/dev/null; then
-        if ss -tuln | grep -q ":$port "; then
+        if ss -tuln | grep -q ":$port\b"; then
             print_error "Port $port is already in use."
         fi
     elif command -v netstat &>/dev/null; then
-        if netstat -tuln | grep -q ":$port "; then
+        if netstat -tuln | grep -q ":$port\b"; then
             print_error "Port $port is already in use."
         fi
     else
@@ -208,17 +186,19 @@ main() {
     read -rp "Enter Database name (default: odoo): " DB_NAME
     DB_NAME="${DB_NAME:-odoo}"
 
-    mkdir -p "$INSTANCE_DIR"/{config,addons,db-data,filestore}
+    mkdir -p "$INSTANCE_DIR"/{config,addons,db-data,data}
 
     ADMIN_PASS=$(generate_password)
 
     # Save secrets securely
+    if [[ ! -f "$SECRETS_FILE" ]]; then
+        echo "# Auto-generated Odoo secrets - DO NOT SHARE" > "$SECRETS_FILE"
+        chmod 600 "$SECRETS_FILE"
+    fi
     {
-        [[ ! -f "$SECRETS_FILE" ]] && echo "# Auto-generated Odoo secrets - DO NOT SHARE" > "$SECRETS_FILE"
         echo "$(date '+%F %T'): Instance '$INSTANCE_NAME' admin password: $ADMIN_PASS"
         echo "$(date '+%F %T'): DB '$DB_NAME' credentials: $DB_USER / $DB_PASS"
-    } >>"$SECRETS_FILE"
-    chmod 600 "$SECRETS_FILE"
+    } >> "$SECRETS_FILE"
     print_info "Credentials saved to $SECRETS_FILE."
     print_warn "⚠️  Keep this file secure. Never share it!"
 
@@ -232,7 +212,7 @@ EOF
     chmod 600 "$INSTANCE_DIR/.env"
 
     # Define official image
-    CUSTOM_IMAGE="amd64/odoo:$ODOO_VERSION"
+    CUSTOM_IMAGE="odoo:$ODOO_VERSION"
 
     # -----------------------------
     # 🧱 Generate docker-compose.yml
@@ -250,7 +230,7 @@ services:
     volumes:
       - ./config:/etc/odoo
       - ./addons:/mnt/extra-addons
-      - ./filestore:/var/lib/odoo/filestore
+      - ./data:/var/lib/odoo
     restart: unless-stopped
     environment:
       - ADMIN_PASS=\${ADMIN_PASS}
@@ -258,6 +238,18 @@ services:
       - .env
     networks:
       - odoo-net-$INSTANCE_NAME
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8069/web/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+        reservations:
+          memory: 512m
 
   db:
     image: postgres:15
@@ -274,24 +266,34 @@ services:
       retries: 10
     networks:
       - odoo-net-$INSTANCE_NAME
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+        reservations:
+          memory: 256m
 
 networks:
   odoo-net-$INSTANCE_NAME:
     driver: bridge
 EOF
 
-    # Minimal config
+    # Odoo config — explicit DB connection settings avoid reliance on entrypoint defaults
     cat >"$INSTANCE_DIR/config/odoo.conf" <<EOF
 [options]
-admin_passwd = \${ADMIN_PASS}
-addons_path = /mnt/extra-addons,/etc/odoo/addons
-data_dir = /var/lib/odoo
+admin_passwd = ${ADMIN_PASS}
+addons_path   = /mnt/extra-addons
+data_dir      = /var/lib/odoo
+db_host       = db
+db_port       = 5432
+db_user       = ${DB_USER}
+db_password   = ${DB_PASS}
 EOF
 
     print_step "Starting Odoo instance..."
-    (
-        cd "$INSTANCE_DIR" && $COMPOSE_CMD up -d 2>&1 | tee -a "$LOGFILE"
-    ) & show_progress "Starting containers" "cd '$INSTANCE_DIR' && $COMPOSE_CMD up -d"
+    (cd "$INSTANCE_DIR" && $COMPOSE_CMD up -d 2>&1 | tee -a "$LOGFILE") \
+        || print_error "Failed to start Odoo containers. Check log: $LOGFILE"
+    print_info "Containers started successfully."
 
     # Detect server IP (more compatible)
     SERVER_IP=$(hostname -I | awk '{print $1}' 2>/dev/null || ip addr show scope global | grep inet | grep -v docker | awk '{print $2}' | cut -d'/' -f1 | head -n1)
@@ -313,7 +315,7 @@ EOF
     echo "⚙️  Config:       $INSTANCE_DIR/config/odoo.conf"
     echo "🧩 Addons:       $INSTANCE_DIR/addons"
     echo "💾 DB Data:      $INSTANCE_DIR/db-data"
-    echo "📁 Filestore:    $INSTANCE_DIR/filestore"
+    echo "📁 Data Dir:     $INSTANCE_DIR/data"
     echo "📜 Log:          $LOGFILE"
     echo "🔒 Secrets:      $SECRETS_FILE"
     echo "──────────────────────────────────────────────"
@@ -322,6 +324,16 @@ EOF
     echo "  cd $INSTANCE_DIR && $COMPOSE_CMD [ps|logs|stop|rm]"
     echo
     echo "💡 Tip: Add your custom addons to $INSTANCE_DIR/addons"
+    echo
+    echo "┌─────────────────────────────────────────────┐"
+    echo "│  🔒  SECURITY REMINDER — ACTION REQUIRED    │"
+    echo "├─────────────────────────────────────────────┤"
+    echo "│  Passwords above are shown in plain text.   │"
+    echo "│  Before leaving this terminal:              │"
+    echo "│    1. Save credentials from: $SECRETS_FILE"
+    echo "│    2. Clear terminal history:               │"
+    echo "│         history -c && history -w            │"
+    echo "└─────────────────────────────────────────────┘"
 }
 
 main "$@"

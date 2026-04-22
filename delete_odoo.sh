@@ -2,10 +2,10 @@
 ################################################################################
 # Odoo Instance Deletion Script - Professional Edition
 # Author: Ibrahim Aljuhani
-# Compatible with: install_odoo.sh v3.0.0
+# Compatible with: install_odoo.sh v3.0.1
 # Features: Safe detection, Dry-run, Non-interactive, Backup, Full cleanup
 ################################################################################
-set -e
+set -euo pipefail
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Color Definitions
@@ -19,6 +19,8 @@ PURPLE='\033[0;35m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+trap 'echo -e "${RED}[FATAL]${NC} Deletion aborted unexpectedly at line $LINENO — check the output above." >&2' ERR
+
 print_info()    { echo -e "${GREEN}[✔ DONE ]${NC} $1"; }
 print_warn()    { echo -e "${YELLOW}[⚠ WARN ]${NC} $1"; }
 print_error()   { echo -e "${RED}[✖ ERROR]${NC} $1"; exit 1; }
@@ -29,7 +31,7 @@ print_banner() {
     echo -e "${BLUE}"
     echo "╔══════════════════════════════════════════════════════════════════╗"
     echo "║         Odoo Instance Deletion Tool - Professional Edition       ║"
-    echo "║                        Version 3.0.0                            ║"
+    echo "║                        Version 3.0.1                            ║"
     echo "╚══════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
@@ -86,7 +88,7 @@ show_help() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Instance Detection
-#  Validates all artifacts created by install_odoo.sh v3.0.0
+#  Validates all artifacts created by install_odoo.sh v3.0.1
 # ─────────────────────────────────────────────────────────────────────────────
 is_odoo_instance() {
     local user="$1"
@@ -106,7 +108,7 @@ detect_instances() {
             fi
         fi
     done < <(cut -d: -f1 /etc/passwd | sort)
-    echo "${instances[@]}"
+    [[ ${#instances[@]} -gt 0 ]] && printf '%s\n' "${instances[@]}"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -217,7 +219,10 @@ backup_instance() {
     local manifests
     manifests=$(ls "$MANIFEST_DIR/${user}_"*"_manifest.json" 2>/dev/null || true)
     if [ -n "$manifests" ]; then
-        sudo cp $manifests "$backup_path/" 2>/dev/null || true
+        while IFS= read -r mf; do
+            [[ -z "$mf" ]] && continue
+            sudo cp "$mf" "$backup_path/" 2>/dev/null || true
+        done <<< "$manifests"
         report "✓ Manifest JSON files backed up"
     fi
 
@@ -236,9 +241,16 @@ step_stop_service() {
         report "[DRY RUN] Stop service ${OE_USER}-server"
         return
     fi
-    sudo systemctl stop "${OE_USER}-server"  2>/dev/null || true
+    # Graceful shutdown first
+    sudo systemctl stop "${OE_USER}-server" 2>/dev/null || true
+    # Wait up to 10 seconds for graceful shutdown
+    for i in $(seq 1 5); do
+        sleep 2
+        sudo systemctl is-active --quiet "${OE_USER}-server" 2>/dev/null || break
+    done
+    # Force kill if still running
     sudo systemctl kill --signal=SIGKILL "${OE_USER}-server" 2>/dev/null || true
-    sleep 2
+    sleep 1
     sudo pkill -9 -u "$OE_USER" 2>/dev/null || true
     report "✓ Service stopped and processes killed"
     print_info "Service stopped."
@@ -250,6 +262,11 @@ step_remove_service_files() {
         report "[DRY RUN] Remove service file and config"
         return
     fi
+    # Read port from config BEFORE removing it (needed for UFW cleanup)
+    local oe_port
+    oe_port=$(grep "^http_port" "/etc/${OE_USER}-server.conf" 2>/dev/null \
+              | awk -F'=' '{print $2}' | tr -d ' ' || true)
+
     sudo systemctl disable --quiet "${OE_USER}-server" 2>/dev/null || true
     sudo rm -f "/etc/systemd/system/${OE_USER}-server.service"
     sudo rm -f "/etc/${OE_USER}-server.conf"
@@ -257,6 +274,14 @@ step_remove_service_files() {
     report "✓ Systemd service file removed"
     report "✓ Odoo config file removed"
     report "✓ Systemd daemon reloaded"
+
+    # Remove UFW deny rule added by Nginx setup
+    if [[ -n "$oe_port" ]]; then
+        sudo ufw delete deny "$oe_port" 2>/dev/null || true
+        report "✓ UFW deny rule for port $oe_port removed"
+        print_info "UFW rule for port $oe_port cleaned up."
+    fi
+
     print_info "Service files removed."
 }
 
@@ -360,7 +385,6 @@ step_remove_nginx_cache() {
 
 # NEW: Remove manifest JSON files (created by install_odoo.sh v3.0.0)
 step_remove_manifests() {
-    local found=false
     local manifests
     manifests=$(ls "$MANIFEST_DIR/${OE_USER}_"*"_manifest.json" 2>/dev/null || true)
 
@@ -377,13 +401,35 @@ step_remove_manifests() {
     fi
 
     local count=0
-    for f in $manifests; do
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
         sudo rm -f "$f"
         count=$((count + 1))
-    done
+    done <<< "$manifests"
 
     report "✓ Removed $count manifest file(s) from $MANIFEST_DIR"
     print_info "Manifest files removed ($count file(s))."
+}
+
+# NEW: Remove logrotate config created by install_odoo.sh v3.0.0
+step_remove_logrotate() {
+    local logrotate_file="/etc/logrotate.d/${OE_USER}-odoo"
+
+    if [ ! -f "$logrotate_file" ]; then
+        print_warn "No logrotate config found for '$OE_USER' — skipping."
+        report "⚠ No logrotate config found — skipped"
+        return
+    fi
+
+    if $DRY_RUN; then
+        print_info "[DRY RUN] Would remove: $logrotate_file"
+        report "[DRY RUN] Remove logrotate config: $logrotate_file"
+        return
+    fi
+
+    sudo rm -f "$logrotate_file"
+    report "✓ Logrotate config removed: $logrotate_file"
+    print_info "Logrotate config removed."
 }
 
 # NEW: Remove shared WebSocket map if this is the last Odoo instance
@@ -392,18 +438,23 @@ step_cleanup_shared_nginx_conf() {
 
     [ -f "$ws_map" ] || return 0
 
-    # Count remaining active Odoo Nginx sites after this deletion
+    # Count remaining Odoo systemd services (excluding the one being deleted).
+    # This is more reliable than grepping Nginx configs for "odoo_" strings.
     local remaining
-    remaining=$(ls /etc/nginx/sites-enabled/ 2>/dev/null \
-                | grep -v "^$OE_USER$" \
-                | while read -r site; do
-                    grep -l "odoo_" "/etc/nginx/sites-available/$site" 2>/dev/null || true
-                  done \
-                | wc -l)
+    remaining=$(systemctl list-unit-files --type=service --state=enabled,generated 2>/dev/null \
+                | awk '{print $1}' \
+                | grep -c '\-server\.service$' 2>/dev/null || echo 0)
+
+    # Subtract the current instance (it may still be listed until daemon-reload)
+    if systemctl list-unit-files --type=service 2>/dev/null \
+            | awk '{print $1}' \
+            | grep -q "^${OE_USER}-server\.service$"; then
+        remaining=$((remaining - 1))
+    fi
 
     if [ "$remaining" -gt 0 ]; then
-        print_warn "Other Odoo instances still use Nginx — keeping ws_upgrade_map.conf."
-        report "⚠ WebSocket map kept (other Odoo instances still active)"
+        print_warn "Other Odoo instances still active — keeping ws_upgrade_map.conf."
+        report "⚠ WebSocket map kept ($remaining other Odoo instance(s) still active)"
         return
     fi
 
@@ -452,7 +503,7 @@ main() {
 
     # ── Detect instances ────────────────────────────────────────────────────
     print_section "Scanning for Odoo Instances"
-    INSTANCES=($(detect_instances))
+    mapfile -t INSTANCES < <(detect_instances)
 
     if [ ${#INSTANCES[@]} -eq 0 ]; then
         print_info "No Odoo instances found on this server."
@@ -467,7 +518,7 @@ main() {
             printf "    %s) %s\n" "$((i+1))" "${INSTANCES[i]}"
         done
         echo ""
-        read -p "  Select instance number to DELETE (0 to cancel): " CHOICE
+        read -rp "  Select instance number to DELETE (0 to cancel): " CHOICE
 
         if [[ "$CHOICE" == "0" || -z "$CHOICE" ]]; then
             print_info "Operation cancelled."
@@ -492,16 +543,8 @@ main() {
     print_section "Instance Details"
     show_instance_info "$OE_USER"
 
-    # ── Backup ──────────────────────────────────────────────────────────────
-    if $BACKUP && ! $DRY_RUN; then
-        print_section "Creating Backup"
-        TEMP_REPORT=$(mktemp)
-        backup_instance "$OE_USER"
-    else
-        TEMP_REPORT=$(mktemp)
-    fi
-
-    # Initialize report
+    # ── Initialize report first (so backup_instance can append to it) ─────────
+    TEMP_REPORT=$(mktemp)
     cat > "$TEMP_REPORT" <<EOF
 Odoo Instance Deletion Report
 ══════════════════════════════════════════════════════════════════
@@ -513,6 +556,12 @@ Backup    : $($BACKUP && echo "YES → $BACKUP_DIR/${OE_USER}_*" || echo 'NO')
 
 Actions performed:
 EOF
+
+    # ── Backup ──────────────────────────────────────────────────────────────
+    if $BACKUP && ! $DRY_RUN; then
+        print_section "Creating Backup"
+        backup_instance "$OE_USER"
+    fi
 
     # ── Confirmation ────────────────────────────────────────────────────────
     if ! $FORCE && ! $DRY_RUN; then
@@ -528,7 +577,7 @@ EOF
         echo "  │    • Log files and manifest JSON files                  │"
         echo "  └─────────────────────────────────────────────────────────┘"
         echo -e "${NC}"
-        read -p "  Type the instance name '${OE_USER}' to confirm: " CONFIRM
+        read -rp "  Type the instance name '${OE_USER}' to confirm: " CONFIRM
         if [ "$CONFIRM" != "$OE_USER" ]; then
             print_error "Confirmation did not match. Aborting."
         fi
@@ -543,6 +592,9 @@ EOF
 
     print_step "Removing service and config files..."
     step_remove_service_files
+
+    print_step "Removing logrotate config..."
+    step_remove_logrotate
 
     print_step "Removing system user and directories..."
     step_remove_user_and_dirs

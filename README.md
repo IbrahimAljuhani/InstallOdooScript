@@ -1,9 +1,9 @@
 # InstallOdooScript — Professional Multi-Instance Manager
 
 [![Ubuntu 22.04+](https://img.shields.io/badge/Ubuntu-22.04%2B-333333?logo=ubuntu)](https://ubuntu.com/)
-[![Odoo 16–19](https://img.shields.io/badge/Odoo-16.0%20|%2017.0%20|%2018.0%20|%2019.0-00A09D?logo=odoo)](https://www.odoo.com/)
+[![Odoo 17–19](https://img.shields.io/badge/Odoo-17.0%20|%2018.0%20|%2019.0-00A09D?logo=odoo)](https://www.odoo.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-3.0.0-blueviolet)](#)
+[![Version](https://img.shields.io/badge/Version-3.0.1-blueviolet)](#)
 [![Production Ready](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)](#)
 
 > **Production-grade Bash toolkit** to install, manage, and safely remove multiple isolated Odoo instances on Ubuntu servers — engineered for DevOps teams and enterprise environments.
@@ -21,7 +21,8 @@ Unlike basic installation scripts, this toolkit implements **professional DevOps
 ✅ **Triple-Layer Security** — Isolated system users, PostgreSQL roles, and Nginx hardening  
 ✅ **Full Lifecycle Management** — Install, inspect, back up, and safely delete instances  
 ✅ **Zero Leftover Artifacts** — Deletion cleans everything: code, DB, logs, Nginx cache, manifests  
-✅ **Gevent Compatibility Fix** — Automatically pins `gevent==23.9.1` for Odoo 16–18  
+✅ **Gevent Compatibility Fix** — Automatically pins `gevent==23.9.1` for Odoo 17–18  
+✅ **Smart wkhtmltopdf Handling** — Optional install with OS/arch detection; graceful fallback to built-in renderer  
 
 ---
 
@@ -29,8 +30,8 @@ Unlike basic installation scripts, this toolkit implements **professional DevOps
 
 | Script | Version | Purpose | Key Features |
 |--------|---------|---------|--------------|
-| `install_odoo.sh` | v3.0.0 | Install new instances | Interactive wizard, non-interactive mode, dry-run, manifest generation, master password terminal display |
-| `delete_odoo.sh` | v3.0.0 | Safely remove instances | 4-artifact validation, smart backup, Nginx cache cleanup, WebSocket map cleanup, no `eval` |
+| `install_odoo.sh` | v3.0.1 | Install new instances | Interactive wizard, non-interactive mode, dry-run, optional wkhtmltopdf, manifest generation, master password terminal display |
+| `delete_odoo.sh` | v3.0.1 | Safely remove instances | 4-artifact validation, smart backup, Nginx cache cleanup, WebSocket map cleanup, no `eval` |
 
 ---
 
@@ -58,10 +59,11 @@ sudo ./install_odoo.sh
 The wizard walks you through 5 steps:
 
 1. **Instance name** — validated, conflict-checked, with optional cleanup of existing instances
-2. **Odoo version** — choose from 16.0 → 19.0
+2. **Odoo version** — choose from 17.0 → 19.0
 3. **Port configuration** — auto-detects conflicts on both HTTP and Longpolling ports
 4. **Nginx + SSL setup** — optional but recommended for production
-5. **Visual summary** — review everything before final confirmation
+5. **wkhtmltopdf** — optional PDF tool with smart OS/architecture detection
+6. **Visual summary** — review everything before final confirmation
 
 ### 3. Install Non-Interactively (CI/CD)
 
@@ -116,12 +118,13 @@ sudo ./delete_odoo.sh --instance prod --dry-run
 | `--non-interactive` | Skip all prompts (requires `--instance` and `--version`) |
 | `--dry-run` | Simulate full installation without changes |
 | `--instance <name>` | Instance name (lowercase, letters/digits/hyphens/underscores) |
-| `--version <ver>` | Odoo version: `19.0` \| `18.0` \| `17.0` \| `16.0` |
+| `--version <ver>` | Odoo version: `19.0` \| `18.0` \| `17.0` |
 | `--port <port>` | HTTP port (default: `8069`; Longpolling = port + 3) |
 | `--nginx` | Enable Nginx reverse proxy |
 | `--domain <domain>` | Domain name for Nginx (defaults to server IP) |
 | `--ssl` | Enable Let's Encrypt SSL via Certbot |
 | `--email <email>` | Email for SSL certificate notifications |
+| `--wkhtmltopdf` | Attempt wkhtmltopdf install (official pkg: Ubuntu 22.04/Jammy only) |
 | `--help`, `-h` | Show help message |
 
 ### `delete_odoo.sh`
@@ -149,7 +152,7 @@ sudo ./delete_odoo.sh --instance prod --dry-run
 │  Odoo version       Confirmation         step_update_system
 │  Port (+ LP)        (or auto in          step_install_packages
 │  Nginx/SSL          non-interactive)     step_install_nodejs
-│                                          step_install_wkhtmltopdf
+│  wkhtmltopdf                             step_install_wkhtmltopdf
 │                                          step_setup_postgresql
 │                                          step_create_pg_user
 │                                          step_create_system_user
@@ -222,7 +225,7 @@ Every installation generates a JSON manifest at `/root/odoo-installs/`:
   "ssl_enabled":      true,
   "ssl_email":        "admin@example.com",
   "server_ip":        "192.168.1.10",
-  "installation_date":"2026-02-09T14:30:22+03:00"
+  "installation_date":"2026-04-22T14:30:22+03:00"
 }
 ```
 
@@ -261,7 +264,15 @@ location ~* ^/web/database {
 
 This blocks all sub-paths (`/manager`, `/selector`, `/create`, etc.) at the web server layer — faster and more reliable than application-layer blocking.
 
-**Verify protection is active:**
+Security headers are applied to **all responses** including static assets:
+
+```nginx
+add_header X-Frame-Options "SAMEORIGIN" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+```
+
+**Verify database manager protection:**
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}" http://localhost/web/database/manager
@@ -304,6 +315,22 @@ A shared WebSocket upgrade map is written to `/etc/nginx/conf.d/ws_upgrade_map.c
 
 ---
 
+## 🖨️ PDF Rendering — wkhtmltopdf
+
+Odoo includes a **built-in PDF renderer** that works out of the box and is the recommended choice for most deployments.
+
+`wkhtmltopdf` is an optional tool that may improve PDF quality for complex reports, but it is **archived** (last release: May 2023) with no official package for Ubuntu 24.04 (Noble) or later.
+
+| System | Behavior |
+|--------|----------|
+| Ubuntu 22.04 Jammy (amd64 / arm64) | Normal prompt — installs official package |
+| Ubuntu 24.04 Noble or other systems | Detailed warning shown — user may continue at own risk |
+| Unsupported architecture | Skipped automatically with explanation |
+
+The `--wkhtmltopdf` flag enables installation in non-interactive mode. Failures are non-fatal — the script continues with the built-in renderer.
+
+---
+
 ## 🗑️ What `delete_odoo.sh` Removes
 
 The deletion script validates an instance using **4 required artifacts** before proceeding:
@@ -329,6 +356,7 @@ If any artifact is missing, the script refuses to run — preventing accidental 
 | Nginx site | `sites-available` + `sites-enabled` removed → Nginx reloaded |
 | Nginx cache | `/var/cache/nginx/odoo_static_<instance>` removed |
 | Manifest files | `/root/odoo-installs/<instance>_*_manifest.json` removed |
+| Logrotate config | `/etc/logrotate.d/<instance>-odoo` removed |
 | WebSocket map | Removed only if no other Odoo instances remain |
 
 ---
@@ -373,8 +401,8 @@ sudo tar -czf /root/backup_<instance>_files_${TIMESTAMP}.tar.gz \
 
 ```bash
 sudo systemctl stop <instance>-server
-sudo -u postgres psql -d <instance> < /root/backup_<instance>_db_20260209.sql
-sudo tar -xzf /root/backup_<instance>_files_20260209.tar.gz -C /
+sudo -u postgres psql -d <instance> < /root/backup_<instance>_db_20260422.sql
+sudo tar -xzf /root/backup_<instance>_files_20260422.tar.gz -C /
 sudo systemctl start <instance>-server
 ```
 
@@ -410,11 +438,11 @@ sudo systemctl is-active <instance>-server && echo "✅ Healthy" || echo "❌ Do
 sudo nano /etc/<instance>-server.conf
 
 # View master password
-sudo grep "master_password" /etc/<instance>-server.conf | awk -F' = ' '{print $2}'
+sudo grep "admin_passwd" /etc/<instance>-server.conf | awk -F' = ' '{print $2}'
 
 # Rotate master password
 NEW_PASS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 20)
-sudo sed -i "s/^master_password.*/master_password    = $NEW_PASS/" /etc/<instance>-server.conf
+sudo sed -i "s/^admin_passwd.*/admin_passwd       = $NEW_PASS/" /etc/<instance>-server.conf
 sudo systemctl restart <instance>-server
 echo "$(date '+%Y-%m-%d %H:%M:%S')  instance='<instance>'  new_master_password='$NEW_PASS'" \
   | sudo tee -a /root/odoo-secrets.txt
@@ -609,7 +637,7 @@ Before going live, verify each item:
     grep "proxy_mode" /etc/<instance>-server.conf
     → Expected: proxy_mode = True
 
-[ ] Odoo 19.0 disclaimer acknowledged (beta as of Feb 2026 — use 18.0 for production)
+[ ] Odoo 19.0 disclaimer acknowledged (beta — use 18.0 for production)
 ```
 
 ---
@@ -618,12 +646,11 @@ Before going live, verify each item:
 
 | Odoo Version | Status | Notes |
 |---|---|---|
-| 19.0 | ⚠️ Beta | Testing only — not recommended for production (as of February 2026) |
+| 19.0 | ⚠️ Beta | Testing only — not recommended for production |
 | 18.0 | ✅ Stable | Recommended for new production deployments |
 | 17.0 | ✅ LTS | Long-term support — safe for existing production |
-| 16.0 | ⚠️ Legacy | Approaching end of support |
 
-> **Gevent note:** Odoo 16, 17, and 18 require `gevent==23.9.1`. The installer handles this automatically by removing the version from `requirements.txt` and installing the pinned version separately.
+> **Gevent note:** Odoo 17 and 18 require `gevent==23.9.1`. The installer handles this automatically by removing the version from `requirements.txt` and installing the pinned version separately.
 
 ---
 
