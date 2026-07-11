@@ -1,8 +1,45 @@
 #!/bin/bash
 # install_odoo_docker.sh
-# Author: Ibrahim Aljuhani (Final Optimized Version - Official Images)
+# Author: Ibrahim Aljuhani (Fixed Version - Official Images)
 # Purpose: Install Odoo in Docker using OFFICIAL Docker Hub images
-# Updated: 2025-10-25
+# Fixed: 2026-07-11
+#
+# CHANGELOG vs original:
+#   1. POSTGRES_DB is now "postgres" (not the instance DB name) so Odoo
+#      creates & initializes the actual database itself via
+#      /web/database/manager instead of finding an empty, uninitialized
+#      DB and throwing "ir_module_module does not exist".
+#   2. /var/lib/odoo is now a named Docker volume instead of a bind mount,
+#      so Docker preserves the correct ownership from the image instead of
+#      inheriting the host user's UID/GID (fixes "Permission denied:
+#      /var/lib/odoo/sessions").
+#   3. ./config and ./addons (which must stay as bind mounts, since users
+#      edit them from the host) are chown'ed to the odoo container's real
+#      UID/GID, detected dynamically instead of hardcoded 100:101.
+#   4. Healthcheck no longer assumes curl exists inside the image; uses
+#      python3 (bundled with Odoo) instead.
+#   5. postgres:15 -> postgres:17.
+#   6. DB_USER / DB_NAME are now validated like the instance name.
+#   7. mem_limit/mem_reservation added alongside "deploy:" so memory
+#      limits also apply under plain `docker-compose` (non-swarm), where
+#      "deploy:" is silently ignored.
+#   8. chown warning for config/addons now tries direct chown, then
+#      passwordless sudo, then explains it's usually harmless instead of
+#      sounding like a blocking error.
+#   9. New option 4 in the version menu: use a custom image (your own
+#      build, Docker Hub, or private registry), validated for format and
+#      existence (locally or via `docker manifest inspect`) before use.
+#  10. WebSocket/longpolling (port 8072) is now exposed and enabled.
+#      Odoo's gevent worker only starts when "workers" >= 1, so the
+#      config now sets workers=2 / max_cron_threads=1 / gevent_port=8072
+#      — without this, live chat, POS sync, and bus notifications
+#      silently fall back to polling or don't work at all.
+#  11. FIX: config/odoo.conf permissions. An earlier revision set this to
+#      chmod 600, which broke the container (it's owned by the host user,
+#      not the container's odoo uid, so the odoo process couldn't read
+#      its own config -> crash loop). Now it's chowned to the odoo
+#      user/group first, then locked to 640 (falls back to 644, with a
+#      warning, if chown isn't possible without sudo).
 
 set -euo pipefail
 
@@ -69,12 +106,12 @@ check_prerequisites() {
 }
 
 # -----------------------------
-# 📦 Validate instance name
+# 📦 Validate identifiers (instance name / db user / db name)
 # -----------------------------
-validate_instance_name() {
-    local name="$1"
-    if [[ ! "$name" =~ ^[a-z][a-z0-9_-]*$ ]]; then
-        print_error "Invalid instance name. Must start with lowercase letter and contain only letters, digits, hyphens, or underscores."
+validate_identifier() {
+    local value="$1" label="$2"
+    if [[ ! "$value" =~ ^[a-z][a-z0-9_-]*$ ]]; then
+        print_error "Invalid $label. Must start with a lowercase letter and contain only letters, digits, hyphens, or underscores."
     fi
 }
 
@@ -86,9 +123,10 @@ choose_odoo_version() {
     echo "1) 19.0 (Development - Use at your own risk)"
     echo "2) 18.0 (Stable - Recommended)"
     echo "3) 17.0 (LTS)"
+    echo "4) Custom image (your own Odoo image, e.g. myrepo/odoo:custom)"
     local choice
     while true; do
-        read -rp "Enter choice (1-3): " choice
+        read -rp "Enter choice (1-4): " choice
         case "$choice" in
             1)
                 ODOO_VERSION="19.0"
@@ -97,9 +135,44 @@ choose_odoo_version() {
                 ;;
             2) ODOO_VERSION="18.0"; break ;;
             3) ODOO_VERSION="17.0"; break ;;
+            4) choose_custom_image; break ;;
             *) echo "Invalid choice. Try again." ;;
         esac
     done
+}
+
+# -----------------------------
+# 🖼️  Choose a custom Odoo image (own build / Docker Hub / private registry)
+# -----------------------------
+choose_custom_image() {
+    local image confirm
+    while true; do
+        read -rp "Enter full image name (e.g. myrepo/odoo:18-custom): " image
+
+        if [[ -z "$image" ]]; then
+            echo "Image name cannot be empty."
+            continue
+        fi
+        # repo[/repo...][:tag] — require an explicit tag (avoid implicit 'latest')
+        if [[ ! "$image" =~ ^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)*:[a-zA-Z0-9._-]+$ ]]; then
+            echo "Invalid format, or missing tag. Expected something like: repo/image:tag"
+            continue
+        fi
+
+        print_info "Checking if '$image' exists locally or on the registry..."
+        if docker image inspect "$image" &>/dev/null; then
+            print_info "Found locally."
+        elif docker manifest inspect "$image" &>/dev/null; then
+            print_info "Found on the registry."
+        else
+            print_warn "Could not verify '$image' — it may not exist, or it's in a private registry that needs 'docker login' first."
+            read -rp "Continue anyway? (y/N): " confirm
+            [[ "$confirm" =~ ^[Yy]$ ]] || continue
+        fi
+        break
+    done
+    CUSTOM_IMAGE_OVERRIDE="$image"
+    ODOO_VERSION="custom"
 }
 
 # -----------------------------
@@ -138,6 +211,31 @@ check_port() {
 }
 
 # -----------------------------
+# 🆔 Detect the real UID/GID of the "odoo" user inside the image
+#     (avoids hardcoding 100:101, which can differ between image builds
+#     and may collide with reserved system UIDs like _apt/systemd-journal)
+# -----------------------------
+detect_odoo_ids() {
+    local image="$1"
+    print_info "Detecting odoo user UID/GID inside $image (pulling image if needed)..."
+    local id_output
+    id_output=$(docker run --rm --entrypoint id "$image" odoo 2>/dev/null || true)
+
+    if [[ -n "$id_output" ]]; then
+        ODOO_UID=$(echo "$id_output" | grep -oP 'uid=\K[0-9]+' || true)
+        ODOO_GID=$(echo "$id_output" | grep -oP 'gid=\K[0-9]+' || true)
+    fi
+
+    if [[ -z "${ODOO_UID:-}" || -z "${ODOO_GID:-}" ]]; then
+        print_warn "Could not detect odoo UID/GID automatically, falling back to 100:101."
+        ODOO_UID=100
+        ODOO_GID=101
+    else
+        print_info "Detected odoo user as UID=$ODOO_UID GID=$ODOO_GID"
+    fi
+}
+
+# -----------------------------
 # 🚀 Main installation process
 # -----------------------------
 main() {
@@ -158,11 +256,16 @@ main() {
     prepare_install_dir
 
     read -rp "Enter instance name (e.g., odoo-prod): " INSTANCE_NAME
-    validate_instance_name "$INSTANCE_NAME"
+    validate_identifier "$INSTANCE_NAME" "instance name"
     INSTANCE_DIR="$INSTALL_DIR/$INSTANCE_NAME"
     [[ -d "$INSTANCE_DIR" ]] && print_error "Instance '$INSTANCE_NAME' already exists."
 
     choose_odoo_version
+    if [[ "$ODOO_VERSION" == "custom" ]]; then
+        CUSTOM_IMAGE="$CUSTOM_IMAGE_OVERRIDE"
+    else
+        CUSTOM_IMAGE="odoo:$ODOO_VERSION"
+    fi
 
     read -rp "Enter HTTP port (default 8069): " ODOO_PORT
     ODOO_PORT="${ODOO_PORT:-8069}"
@@ -171,10 +274,22 @@ main() {
     fi
     check_port "$ODOO_PORT"
 
+    LONGPOLLING_DEFAULT=$((ODOO_PORT + 3))
+    read -rp "Enter WebSocket/longpolling port (default $LONGPOLLING_DEFAULT): " LONGPOLLING_PORT
+    LONGPOLLING_PORT="${LONGPOLLING_PORT:-$LONGPOLLING_DEFAULT}"
+    if ! [[ "$LONGPOLLING_PORT" =~ ^[0-9]+$ ]] || [ "$LONGPOLLING_PORT" -lt 1024 ] || [ "$LONGPOLLING_PORT" -gt 65535 ]; then
+        print_error "Port must be between 1024 and 65535."
+    fi
+    if [ "$LONGPOLLING_PORT" -eq "$ODOO_PORT" ]; then
+        print_error "WebSocket/longpolling port must be different from the HTTP port."
+    fi
+    check_port "$LONGPOLLING_PORT"
+
     echo
     echo "Database Configuration:"
     read -rp "Enter PostgreSQL username (default: odoo): " DB_USER
     DB_USER="${DB_USER:-odoo}"
+    validate_identifier "$DB_USER" "database username"
 
     read -rsp "Enter PostgreSQL password (leave blank to auto-generate): " DB_PASS
     echo
@@ -183,10 +298,28 @@ main() {
         print_warn "Auto-generated DB password: $DB_PASS"
     fi
 
-    read -rp "Enter Database name (default: odoo): " DB_NAME
+    read -rp "Enter Database name (default: odoo) — this is just the name you'll type in Odoo's database manager on first login, it is NOT pre-created: " DB_NAME
     DB_NAME="${DB_NAME:-odoo}"
+    validate_identifier "$DB_NAME" "database name"
 
-    mkdir -p "$INSTANCE_DIR"/{config,addons,db-data,data}
+    # Detect the odoo container's UID/GID so bind-mounted config/addons
+    # folders are owned correctly. This also pre-pulls the image.
+    detect_odoo_ids "$CUSTOM_IMAGE"
+
+    mkdir -p "$INSTANCE_DIR"/{config,addons,db-data}
+
+    # Give the odoo container user write access to the bind-mounted folders
+    # Try direct chown first (works if you already own the files), then fall
+    # back to non-interactive sudo (only succeeds if you have passwordless
+    # sudo cached — this never blocks the script waiting for a password).
+    if chown -R "$ODOO_UID:$ODOO_GID" "$INSTANCE_DIR/config" "$INSTANCE_DIR/addons" 2>/dev/null; then
+        print_info "Set ownership of config/addons to $ODOO_UID:$ODOO_GID."
+    elif sudo -n chown -R "$ODOO_UID:$ODOO_GID" "$INSTANCE_DIR/config" "$INSTANCE_DIR/addons" 2>/dev/null; then
+        print_info "Set ownership of config/addons to $ODOO_UID:$ODOO_GID (via sudo)."
+    else
+        print_warn "Could not chown config/addons automatically. This is usually harmless — Odoo only reads from these two folders in normal operation and doesn't need write access to them. You'd only need this if you plan to let Odoo itself write into config/addons (uncommon). If you hit permission errors later, run:"
+        print_warn "  sudo chown -R $ODOO_UID:$ODOO_GID $INSTANCE_DIR/{config,addons}"
+    fi
 
     ADMIN_PASS=$(generate_password)
 
@@ -203,16 +336,18 @@ main() {
     print_warn "⚠️  Keep this file secure. Never share it!"
 
     # Create .env file for docker-compose
+    # NOTE: POSTGRES_DB is intentionally "postgres" (the default maintenance
+    # DB), NOT $DB_NAME. Odoo creates/initializes the real database itself
+    # the first time you visit /web/database/manager. Pre-creating an empty
+    # DB_NAME database here would make Odoo think it's already initialized
+    # and fail with "ir_module_module does not exist".
     cat >"$INSTANCE_DIR/.env" <<EOF
-POSTGRES_DB=$DB_NAME
+POSTGRES_DB=postgres
 POSTGRES_USER=$DB_USER
 POSTGRES_PASSWORD=$DB_PASS
 ADMIN_PASS=$ADMIN_PASS
 EOF
     chmod 600 "$INSTANCE_DIR/.env"
-
-    # Define official image
-    CUSTOM_IMAGE="odoo:$ODOO_VERSION"
 
     # -----------------------------
     # 🧱 Generate docker-compose.yml
@@ -227,10 +362,11 @@ services:
         condition: service_healthy
     ports:
       - "$ODOO_PORT:8069"
+      - "$LONGPOLLING_PORT:8072"
     volumes:
       - ./config:/etc/odoo
       - ./addons:/mnt/extra-addons
-      - ./data:/var/lib/odoo
+      - odoo-data:/var/lib/odoo
     restart: unless-stopped
     environment:
       - ADMIN_PASS=\${ADMIN_PASS}
@@ -238,8 +374,10 @@ services:
       - .env
     networks:
       - odoo-net-$INSTANCE_NAME
+    mem_limit: 2g
+    mem_reservation: 512m
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8069/web/health"]
+      test: ["CMD", "python3", "-c", "import urllib.request as u,sys; sys.exit(0 if u.urlopen('http://localhost:8069/web/health').status==200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -252,7 +390,7 @@ services:
           memory: 512m
 
   db:
-    image: postgres:15
+    image: postgres:17
     container_name: odoo-$INSTANCE_NAME-db
     env_file:
       - .env
@@ -260,12 +398,14 @@ services:
       - ./db-data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \$POSTGRES_USER -d \$POSTGRES_DB"]
+      test: ["CMD-SHELL", "pg_isready -U \$POSTGRES_USER -d postgres"]
       interval: 5s
       timeout: 5s
       retries: 10
     networks:
       - odoo-net-$INSTANCE_NAME
+    mem_limit: 1g
+    mem_reservation: 256m
     deploy:
       resources:
         limits:
@@ -273,12 +413,17 @@ services:
         reservations:
           memory: 256m
 
+volumes:
+  odoo-data:
+
 networks:
   odoo-net-$INSTANCE_NAME:
     driver: bridge
 EOF
 
-    # Odoo config — explicit DB connection settings avoid reliance on entrypoint defaults
+    # Odoo config — explicit DB connection settings avoid reliance on entrypoint defaults.
+    # db_name is intentionally left unset so Odoo shows the database
+    # selector/manager on first visit instead of assuming a DB already exists.
     cat >"$INSTANCE_DIR/config/odoo.conf" <<EOF
 [options]
 admin_passwd = ${ADMIN_PASS}
@@ -288,7 +433,33 @@ db_host       = db
 db_port       = 5432
 db_user       = ${DB_USER}
 db_password   = ${DB_PASS}
+list_db       = True
+workers       = 2
+max_cron_threads = 1
+gevent_port   = 8072
 EOF
+    # odoo.conf is bind-mounted and read directly by the odoo user (uid
+    # $ODOO_UID) inside the container. It must stay readable by that user.
+    # chmod 600 alone would lock the container OUT of its own config file
+    # (since the file is owned by the host user, not uid $ODOO_UID) and
+    # cause a permission-denied crash loop. So: try to hand ownership to
+    # the container's odoo user first, then lock it down to 640 (owner +
+    # group read/write only). If we can't chown (no sudo), fall back to
+    # 644 so the container can still read it — world-readable beats
+    # "secure but broken" on a single-user dev/test box.
+    if chown "$ODOO_UID:$ODOO_GID" "$INSTANCE_DIR/config/odoo.conf" 2>/dev/null; then
+        chmod 640 "$INSTANCE_DIR/config/odoo.conf"
+    elif sudo -n chown "$ODOO_UID:$ODOO_GID" "$INSTANCE_DIR/config/odoo.conf" 2>/dev/null; then
+        # We just handed ownership to $ODOO_UID via sudo, so a plain
+        # (non-sudo) chmod would now fail with "Operation not permitted"
+        # -- only the file's owner (or root) may change its mode. Use
+        # sudo here too, consistently.
+        sudo -n chmod 640 "$INSTANCE_DIR/config/odoo.conf" 2>/dev/null \
+            || print_warn "chown via sudo succeeded but chmod did not; file may be left at default permissions."
+    else
+        chmod 644 "$INSTANCE_DIR/config/odoo.conf"
+        print_warn "Could not chown odoo.conf to the container's odoo user; left it world-readable (644) so the container can still read it. Run 'sudo chown $ODOO_UID:$ODOO_GID $INSTANCE_DIR/config/odoo.conf && sudo chmod 640 $INSTANCE_DIR/config/odoo.conf' to tighten this."
+    fi
 
     print_step "Starting Odoo instance..."
     (cd "$INSTANCE_DIR" && $COMPOSE_CMD up -d 2>&1 | tee -a "$LOGFILE") \
@@ -307,18 +478,27 @@ EOF
     echo
     echo "──────────────────────────────────────────────"
     echo "🌐 URL:          http://$SERVER_IP:$ODOO_PORT"
+    echo "🔌 WebSocket:    http://$SERVER_IP:$LONGPOLLING_PORT  (live chat / POS / bus notifications)"
     echo "📦 Odoo Version: $ODOO_VERSION"
-    echo "🗄️  Database:     $DB_NAME"
+    echo "🖼️  Image:        $CUSTOM_IMAGE"
+    echo "🗄️  Database:     $DB_NAME  (not yet created — see next step below)"
     echo "👤 DB User:      $DB_USER"
     echo "🔑 DB Password:  $DB_PASS"
     echo "🔐 Admin Pass:   $ADMIN_PASS"
     echo "⚙️  Config:       $INSTANCE_DIR/config/odoo.conf"
     echo "🧩 Addons:       $INSTANCE_DIR/addons"
     echo "💾 DB Data:      $INSTANCE_DIR/db-data"
-    echo "📁 Data Dir:     $INSTANCE_DIR/data"
+    echo "📁 Data Volume:  odoo-data (named Docker volume, not a host folder)"
     echo "📜 Log:          $LOGFILE"
     echo "🔒 Secrets:      $SECRETS_FILE"
     echo "──────────────────────────────────────────────"
+    echo
+    echo "👉 NEXT STEP (first run only):"
+    echo "   Open http://$SERVER_IP:$ODOO_PORT/web/database/manager"
+    echo "   and click 'Create Database' using:"
+    echo "     - Master Password: $ADMIN_PASS"
+    echo "     - Database Name:   $DB_NAME"
+    echo "   Odoo will create and initialize the DB tables itself."
     echo
     echo "To manage containers:"
     echo "  cd $INSTANCE_DIR && $COMPOSE_CMD [ps|logs|stop|rm]"
