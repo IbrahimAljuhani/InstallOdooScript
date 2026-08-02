@@ -362,6 +362,19 @@ Odoo includes a **built-in PDF renderer** that works out of the box and is the r
 
 The `--wkhtmltopdf` flag enables installation in non-interactive mode. Failures are non-fatal — the script continues with the built-in renderer.
 
+### Known Issue: Unstyled PDFs With Nginx
+
+If you enable **both** `--wkhtmltopdf` and `--nginx`, generated PDF reports may come out with no CSS styling at all (no colors, no layout — plain squished text), even though the exact same report renders correctly without Nginx.
+
+**Root cause** (confirmed against Odoo 18 source, `odoo/addons/base/models/ir_actions_report.py`): `wkhtmltopdf` is an archived project built on an old WebKit engine with a weak/outdated TLS stack. When it renders a report, it fetches the report's CSS over HTTP(S) using the URL from `ir_actions_report._get_report_url()`, which defaults to the instance's public `web.base.url` — i.e. through Nginx, over HTTPS, often behind Cloudflare. The old TLS stack frequently fails that handshake, silently loses the CSS, and produces an unstyled PDF while the base HTML still comes through.
+
+**Fix** — add a dedicated System Parameter so `wkhtmltopdf` fetches assets over plain HTTP on localhost instead, bypassing Nginx/Cloudflare/TLS entirely, without touching `web.base.url` (portal/email links are unaffected):
+
+1. Odoo UI → **Settings → Technical → System Parameters** → New
+2. **Key**: `report.url`
+3. **Value**: `http://localhost:<http_port>` (the same port as `http_port` in `/etc/<instance>-server.conf`, e.g. `http://localhost:8069`)
+4. Save, then regenerate the report — styling should be restored immediately (no restart needed).
+
 ---
 
 ## ⚙️ Background Jobs — queue_job (OCA)
@@ -649,6 +662,15 @@ sudo certbot renew --dry-run --cert-name <domain>
 # Check certificate expiry
 echo | openssl s_client -connect <domain>:443 2>/dev/null \
   | openssl x509 -noout -dates
+```
+
+### PDF Reports Have No Styling / Colors (wkhtmltopdf + Nginx)
+
+See [Known Issue: Unstyled PDFs With Nginx](#known-issue-unstyled-pdfs-with-nginx) under the wkhtmltopdf section. Quick fix: add System Parameter `report.url` = `http://localhost:<http_port>`.
+
+```bash
+# Confirm your instance's actual port before setting report.url
+sudo grep "^http_port" /etc/<instance>-server.conf
 ```
 
 ---
