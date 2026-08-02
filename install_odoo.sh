@@ -65,6 +65,7 @@ NGINX_DOMAIN=""
 SSL_CHOICE="n"
 LETSENCRYPT_EMAIL=""
 INSTALL_WKHTMLTOPDF="False"
+INSTALL_QUEUE_JOB="False"
 OE_SUPERADMIN=""
 NGINX_ACCESS_URL=""
 
@@ -94,6 +95,89 @@ check_nginx_installed() {
     command -v nginx &>/dev/null
 }
 
+# Strict check: only returns true if ALL FOUR artifacts created by this script's
+# own install flow are present. Mirrors delete_odoo.sh's is_odoo_instance() —
+# used to gate any destructive action (userdel/rm -rf) so a name collision with
+# an unrelated system user (e.g. 'backup', 'deploy') can never trigger deletion.
+is_odoo_instance() {
+    local user="$1"
+    [ -f "/etc/${user}-server.conf" ]                        &&
+    [ -f "/etc/systemd/system/${user}-server.service" ]      &&
+    [ -d "/$user/${user}-server" ]                           &&
+    [ -f "/$user/${user}-server/odoo-bin" ]
+}
+
+# This script's Nginx setup deliberately restricts UFW to allow ports 80/443
+# ONLY from Cloudflare's published IP ranges (see step_configure_nginx) — this
+# is an intentional security requirement, not optional. But if the domain is
+# not actually proxied through Cloudflare (orange-cloud DNS), the site becomes
+# completely unreachable with no error anywhere. This check turns that silent
+# failure into a loud, explicit warning before the firewall rule is applied.
+# Requires $CF_IPV4_LIST / $CF_IPV6_LIST to already be populated by the caller.
+warn_if_domain_not_behind_cloudflare() {
+    local domain="$1"
+
+    if [[ "$domain" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$domain" == *:* ]]; then
+        print_warn "Domain is set to a raw IP address ('$domain'), not a hostname."
+        print_warn "Cloudflare proxying only applies to actual domain names — a raw IP"
+        print_warn "can NEVER be behind Cloudflare. The firewall will only allow port"
+        print_warn "80/443 from Cloudflare IPs, so this site will be UNREACHABLE from"
+        print_warn "the public internet after setup (SSH on port 22 is unaffected)."
+        _cf_confirm_continue
+        return
+    fi
+
+    local resolved_ip
+    resolved_ip=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | head -1)
+    if [[ -z "$resolved_ip" ]]; then
+        print_warn "Could not resolve '$domain' to an IP address right now."
+        print_warn "If you just created the DNS record, this may just be propagation"
+        print_warn "delay — but if it doesn't resolve, or doesn't resolve through"
+        print_warn "Cloudflare (orange-cloud enabled), the site will be UNREACHABLE"
+        print_warn "after setup, since UFW only allows Cloudflare IPs on port 80/443."
+        _cf_confirm_continue
+        return
+    fi
+
+    if command -v python3 &>/dev/null && python3 - "$resolved_ip" <<PYEOF
+import ipaddress, sys
+ip = ipaddress.ip_address(sys.argv[1])
+ranges = """$CF_IPV4_LIST
+$CF_IPV6_LIST""".strip().splitlines()
+for r in ranges:
+    r = r.strip()
+    if not r:
+        continue
+    try:
+        if ip in ipaddress.ip_network(r, strict=False):
+            sys.exit(0)
+    except ValueError:
+        continue
+sys.exit(1)
+PYEOF
+    then
+        print_info "Domain '$domain' resolves to $resolved_ip — confirmed behind Cloudflare."
+    else
+        print_warn "Domain '$domain' resolves to $resolved_ip, which is NOT a Cloudflare IP."
+        print_warn "This script's firewall only allows port 80/443 from Cloudflare — unless"
+        print_warn "you enable the Cloudflare proxy (orange cloud) for this DNS record, the"
+        print_warn "site will be COMPLETELY UNREACHABLE after this setup completes."
+        _cf_confirm_continue
+    fi
+}
+
+_cf_confirm_continue() {
+    if [[ "$CONFIG_MODE" != "interactive" ]]; then
+        print_warn "Continuing anyway (non-interactive mode) — review the warning above."
+        return
+    fi
+    read -rp "  Continue anyway? (y/N): " _CF_CHOICE
+    _CF_CHOICE=$(echo "$_CF_CHOICE" | tr '[:upper:]' '[:lower:]')
+    if [[ "$_CF_CHOICE" != "y" && "$_CF_CHOICE" != "yes" ]]; then
+        print_error "Aborted. Fix DNS/Cloudflare proxying for the domain and re-run."
+    fi
+}
+
 validate_instance_name() {
     [[ "$1" =~ ^[a-z][a-z0-9_-]*$ ]]
 }
@@ -118,6 +202,7 @@ parse_arguments() {
             --ssl)              SSL_CHOICE="y"; shift ;;
             --email)            LETSENCRYPT_EMAIL="$2"; shift 2 ;;
             --wkhtmltopdf)      INSTALL_WKHTMLTOPDF="True"; shift ;;
+            --queue-job)        INSTALL_QUEUE_JOB="True"; shift ;;
             --help|-h)          show_help; exit 0 ;;
             *)                  shift ;;
         esac
@@ -135,7 +220,7 @@ show_help() {
     echo "    sudo ./install_odoo.sh --non-interactive \\"
     echo "      --instance <name> --version <17.0|18.0|19.0> --port <port> \\"
     echo "      [--nginx] [--domain <domain>] [--ssl] [--email <email>] \\"
-    echo "      [--wkhtmltopdf]"
+    echo "      [--wkhtmltopdf] [--queue-job]"
     echo ""
     echo "  Dry-Run (simulate only):"
     echo "    sudo ./install_odoo.sh --dry-run --instance test --version 18.0 --port 8069"
@@ -149,6 +234,7 @@ show_help() {
     printf "  %-22s %s\n" "--ssl"           "Enable Let's Encrypt SSL"
     printf "  %-22s %s\n" "--email"         "Email for SSL notifications"
     printf "  %-22s %s\n" "--wkhtmltopdf"   "Attempt wkhtmltopdf install (official pkg: Ubuntu 22.04/Jammy only)"
+    printf "  %-22s %s\n" "--queue-job"     "Install OCA queue_job and enable it as a server-wide module"
     printf "  %-22s %s\n" "--dry-run"       "Simulate without making changes"
     printf "  %-22s %s\n" "--help, -h"      "Show this help message"
 }
@@ -158,6 +244,15 @@ show_help() {
 # ─────────────────────────────────────────────────────────────────────────────
 handle_existing_instance() {
     local user="$1"
+
+    # Defense in depth: never delete anything unless this is confirmed to be a
+    # real Odoo instance created by this script (see is_odoo_instance()). The
+    # caller already gates on this, but this function must never trust that
+    # alone — a future caller or copy-paste elsewhere must not be able to turn
+    # this into a generic "delete any system user" primitive.
+    if ! is_odoo_instance "$user"; then
+        print_error "'$user' is an existing system user/service but does not look like an Odoo instance created by this script (missing config, systemd unit, source dir, or odoo-bin). Refusing to delete it — choose a different instance name."
+    fi
 
     echo -e "${RED}"
     echo "  ┌─────────────────────────────────────────────────────────┐"
@@ -247,6 +342,17 @@ handle_existing_instance() {
     sudo rm -f "/etc/logrotate.d/${user}-odoo"
     print_info "Logrotate config removed."
 
+    # Remove manifest JSON files (mirrors delete_odoo.sh's step_remove_manifests)
+    local _manifests
+    _manifests=$(ls "$MANIFEST_DIR/${user}_"*"_manifest.json" 2>/dev/null || true)
+    if [ -n "$_manifests" ]; then
+        while IFS= read -r _mf; do
+            [[ -z "$_mf" ]] && continue
+            sudo rm -f "$_mf"
+        done <<< "$_manifests"
+        print_info "Manifest JSON files removed."
+    fi
+
     # Remove UFW deny rule added by Nginx setup
     if [[ -n "$oe_port" ]]; then
         sudo ufw delete deny "$oe_port" 2>/dev/null || true
@@ -274,16 +380,24 @@ gather_inputs() {
         fi
         if check_instance_exists "$OE_USER"; then
             echo ""
-            print_warn "Instance '$OE_USER' already exists!"
-            echo "  What would you like to do?"
-            echo "    1) Delete the existing instance and reinstall"
-            echo "    2) Enter a different instance name"
-            read -rp "  Choice (1/2): " CONFLICT_CHOICE
-            case $CONFLICT_CHOICE in
-                1) handle_existing_instance "$OE_USER"; break ;;
-                2) OE_USER=""; continue ;;
-                *) print_warn "Invalid choice. Please enter 1 or 2." ;;
-            esac
+            if is_odoo_instance "$OE_USER"; then
+                print_warn "Instance '$OE_USER' already exists!"
+                echo "  What would you like to do?"
+                echo "    1) Delete the existing instance and reinstall"
+                echo "    2) Enter a different instance name"
+                read -rp "  Choice (1/2): " CONFLICT_CHOICE
+                case $CONFLICT_CHOICE in
+                    1) handle_existing_instance "$OE_USER"; break ;;
+                    2) OE_USER=""; continue ;;
+                    *) print_warn "Invalid choice. Please enter 1 or 2." ;;
+                esac
+            else
+                # A system user/service with this name exists but it is NOT a valid
+                # Odoo instance created by this script — never offer to delete it.
+                print_warn "'$OE_USER' is already in use by an existing system user or service that does not appear to be an Odoo instance. For safety, this name cannot be reused or auto-deleted."
+                OE_USER=""
+                continue
+            fi
         else
             break
         fi
@@ -395,6 +509,22 @@ gather_inputs() {
             print_info "Skipping wkhtmltopdf — Odoo built-in PDF renderer will be used."
         fi
     fi
+
+    # ── queue_job (OCA) ───────────────────────────────────────────────────
+    print_section "Background Job Queue (OCA queue_job)"
+    echo "  queue_job (OCA) lets Odoo modules run methods asynchronously via"
+    echo "  .with_delay() instead of blocking the request. Optional — only"
+    echo "  needed if a module you plan to install actually uses it."
+    echo ""
+    read -rp "  Install and enable OCA queue_job? (y/N): " QJ_CHOICE
+    QJ_CHOICE=$(echo "$QJ_CHOICE" | tr '[:upper:]' '[:lower:]')
+    if [[ "$QJ_CHOICE" =~ ^(y|yes)$ ]]; then
+        INSTALL_QUEUE_JOB="True"
+        print_info "queue_job will be installed and enabled as a server-wide module."
+    else
+        INSTALL_QUEUE_JOB="False"
+        print_info "Skipping queue_job."
+    fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -422,6 +552,8 @@ validate_configuration() {
     fi
     local _wk_disp="No (built-in renderer)"; [[ "$INSTALL_WKHTMLTOPDF" == "True" ]] && _wk_disp="Yes (if supported)"
     printf  "${BLUE}║${NC}  %-22s : %-40s ${BLUE}║${NC}\n" "wkhtmltopdf"      "$_wk_disp"
+    local _qj_disp="No"; [[ "$INSTALL_QUEUE_JOB" == "True" ]] && _qj_disp="Yes"
+    printf  "${BLUE}║${NC}  %-22s : %-40s ${BLUE}║${NC}\n" "queue_job"        "$_qj_disp"
     echo -e "${BLUE}╚══════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
 
@@ -648,6 +780,37 @@ step_create_addons_dir() {
     print_info "Custom addons directory: /$OE_USER/custom/addons"
 }
 
+step_install_queue_job() {
+    if [[ "$INSTALL_QUEUE_JOB" != "True" ]]; then
+        print_info "queue_job skipped."
+        return
+    fi
+
+    local ADDONS_DIR="/$OE_USER/custom/addons"
+    local QJ_DIR="$ADDONS_DIR/queue_job"
+    local TMP_CLONE="/tmp/oca_queue_${OE_USER}"
+
+    if [ -d "$QJ_DIR" ]; then
+        print_warn "queue_job already present at $QJ_DIR — skipping clone."
+        return
+    fi
+
+    print_step "Cloning OCA queue_job (branch $OE_VERSION)..."
+    rm -rf "$TMP_CLONE"
+    if sudo -u "$OE_USER" git clone --depth 1 --branch "$OE_VERSION" \
+            https://github.com/OCA/queue "$TMP_CLONE" 2>/dev/null; then
+        sudo -u "$OE_USER" cp -r "$TMP_CLONE/queue_job" "$QJ_DIR"
+        rm -rf "$TMP_CLONE"
+        print_info "queue_job installed to $QJ_DIR"
+    else
+        print_warn "Could not clone OCA queue_job for branch '$OE_VERSION' (the branch may not exist yet for this Odoo version). Skipping — install it manually later if needed."
+        rm -rf "$TMP_CLONE"
+        # Prevent step_create_config from enabling server_wide_modules for a
+        # module that was never actually installed - that would crash Odoo on boot.
+        INSTALL_QUEUE_JOB="False"
+    fi
+}
+
 step_set_permissions() {
     sudo chown -R "$OE_USER:$OE_USER" "/$OE_USER"
     print_info "Permissions set for /$OE_USER"
@@ -719,6 +882,14 @@ longpolling_port   = ${LONGPOLLING_PORT}
 logfile            = /var/log/${OE_USER}/${OE_USER}-server.log
 addons_path        = ${OE_HOME_EXT}/addons,/$OE_USER/custom/addons
 EOF
+
+    if [[ "$INSTALL_QUEUE_JOB" == "True" ]]; then
+        # queue_job's jobrunner thread only starts if it is loaded as a server-wide
+        # module (imported at process boot, before any per-database install state
+        # is checked) - see step_install_queue_job for where the addon is cloned.
+        echo "server_wide_modules = web,queue_job" | sudo tee -a "$CONFIG_FILE" > /dev/null
+        print_info "server_wide_modules = web,queue_job added to config."
+    fi
 
     print_info "Config file: $CONFIG_FILE"
 }
@@ -814,6 +985,9 @@ step_configure_nginx() {
         print_warn "Could not fetch Cloudflare IPv6 IPs — skipping IPv6 rules."
         CF_IPV6_LIST=""
     }
+
+    print_step "Verifying domain is proxied through Cloudflare..."
+    warn_if_domain_not_behind_cloudflare "$NGINX_DOMAIN"
 
     sudo ufw delete allow 'Nginx Full'  2>/dev/null || true
     sudo ufw delete allow 'Nginx HTTP'  2>/dev/null || true
@@ -1136,8 +1310,10 @@ step_generate_manifest() {
     local MANIFEST_FILE="$MANIFEST_DIR/${OE_USER}_$(date +%Y%m%d_%H%M%S)_manifest.json"
     local NGINX_EN="false"
     local SSL_EN="false"
+    local QJ_EN="false"
     [[ "$NGINX_CHOICE" =~ ^(y|yes)$ ]] && NGINX_EN="true"
     [[ "$SSL_CHOICE"   =~ ^(y|yes)$ ]] && SSL_EN="true"
+    [[ "$INSTALL_QUEUE_JOB" == "True" ]] && QJ_EN="true"
 
     cat > "$MANIFEST_FILE" <<EOF
 {
@@ -1148,6 +1324,7 @@ step_generate_manifest() {
   "nginx_enabled":    $NGINX_EN,
   "domain":           "$NGINX_DOMAIN",
   "ssl_enabled":      $SSL_EN,
+  "queue_job_enabled":$QJ_EN,
   "ssl_email":        "$LETSENCRYPT_EMAIL",
   "server_ip":        "$SERVER_IP",
   "installation_date":"$(date -Iseconds)"
@@ -1188,6 +1365,7 @@ execute_installation() {
     print_section "Odoo Source & Python"
     execute_step "Cloning Odoo source"       step_clone_odoo
     execute_step "Creating custom addons dir" step_create_addons_dir
+    execute_step "Installing queue_job"      step_install_queue_job
     execute_step "Setting permissions"       step_set_permissions
     execute_step "Creating Python venv"      step_create_venv
     execute_step "Installing Python deps"    step_install_python_deps
@@ -1255,6 +1433,8 @@ execute_installation() {
     printf "║  %-22s : %-40s║\n" "Log File"          "/var/log/$OE_USER/${OE_USER}-server.log"
     printf "║  %-22s : %-40s║\n" "Source Code"       "/$OE_USER/${OE_USER}-server"
     printf "║  %-22s : %-40s║\n" "Custom Addons"     "/$OE_USER/custom/addons"
+    local _qj_final="No"; [[ "$INSTALL_QUEUE_JOB" == "True" ]] && _qj_final="Yes (server-wide)"
+    printf "║  %-22s : %-40s║\n" "queue_job"         "$_qj_final"
     printf "║  %-22s : %-40s║\n" "Install Time"      "$((DURATION / 60)) min $((DURATION % 60)) sec"
     echo "╠══════════════════════════════════════════════════════════════════╣"
     echo -e "${NC}${BOLD}${RED}"
