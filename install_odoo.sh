@@ -2,7 +2,7 @@
 ################################################################################
 # Odoo Multi-Instance Installation Script - Professional Edition
 # Author: Ibrahim Aljuhani
-# Version: 3.0.1
+# Version: 3.0.2
 # Supports: Ubuntu 22.04+
 # Architecture: Configuration-First Pattern (Gather → Validate → Execute)
 # Modes: Interactive | Non-Interactive | Dry-Run
@@ -35,7 +35,7 @@ print_banner() {
     echo -e "${BLUE}"
     echo "╔══════════════════════════════════════════════════════════════════╗"
     echo "║         Odoo Multi-Instance Installer - Professional Edition     ║"
-    echo "║                        Version 3.0.1                            ║"
+    echo "║                        Version 3.0.2                            ║"
     echo "╚══════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
