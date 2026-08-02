@@ -2,7 +2,7 @@
 ################################################################################
 # Odoo Multi-Instance Installation Script - Professional Edition
 # Author: Ibrahim Aljuhani
-# Version: 3.0.2
+# Version: 3.0.3
 # Supports: Ubuntu 22.04+
 # Architecture: Configuration-First Pattern (Gather → Validate → Execute)
 # Modes: Interactive | Non-Interactive | Dry-Run
@@ -35,7 +35,7 @@ print_banner() {
     echo -e "${BLUE}"
     echo "╔══════════════════════════════════════════════════════════════════╗"
     echo "║         Odoo Multi-Instance Installer - Professional Edition     ║"
-    echo "║                        Version 3.0.2                            ║"
+    echo "║                        Version 3.0.3                            ║"
     echo "╚══════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
@@ -93,6 +93,23 @@ check_port_in_use() {
 
 check_nginx_installed() {
     command -v nginx &>/dev/null
+}
+
+# Poll until the given systemd service becomes active, or give up after ~60s.
+# Shared by step_start_service (initial boot) and step_configure_nginx (the
+# restart after appending proxy_mode) so both wait-and-verify the same way
+# instead of firing systemctl restart and silently trusting it worked.
+wait_for_service_active() {
+    local service="$1"
+    for i in $(seq 1 20); do
+        sleep 3
+        if sudo systemctl is-active --quiet "$service"; then
+            print_info "Service '$service' is running ($((i * 3))s)."
+            return 0
+        fi
+        print_warn "Not ready yet... ($((i * 3))s elapsed)"
+    done
+    return 1
 }
 
 # Strict check: only returns true if ALL FOUR artifacts created by this script's
@@ -932,15 +949,8 @@ EOF
 step_start_service() {
     sudo systemctl start "${OE_USER}-server"
     print_step "Waiting for Odoo service to become active (up to 60s)..."
-    for i in $(seq 1 20); do
-        sleep 3
-        if sudo systemctl is-active --quiet "${OE_USER}-server"; then
-            print_info "Odoo service is running (started in $((i * 3))s)."
-            return
-        fi
-        print_warn "Not ready yet... ($((i * 3))s elapsed)"
-    done
-    print_error "Odoo service did not start within 60 seconds. Run: journalctl -u ${OE_USER}-server -n 50"
+    wait_for_service_active "${OE_USER}-server" \
+        || print_error "Odoo service did not start within 60 seconds. Run: journalctl -u ${OE_USER}-server -n 50"
 }
 
 step_configure_nginx() {
@@ -1259,6 +1269,9 @@ NGINXEOF
     if ! grep -q "^proxy_mode" "$CONFIG_FILE"; then
         echo "proxy_mode         = True" | sudo tee -a "$CONFIG_FILE" > /dev/null
         sudo systemctl restart "${OE_USER}-server"
+        print_step "Waiting for Odoo to come back up after enabling proxy_mode (up to 60s)..."
+        wait_for_service_active "${OE_USER}-server" \
+            || print_error "Odoo did not come back up after enabling proxy_mode. Run: journalctl -u ${OE_USER}-server -n 50"
     fi
 
     # ── SSL / Let's Encrypt ────────────────────────────────────────────

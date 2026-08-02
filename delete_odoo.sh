@@ -2,7 +2,7 @@
 ################################################################################
 # Odoo Instance Deletion Script - Professional Edition
 # Author: Ibrahim Aljuhani
-# Compatible with: install_odoo.sh v3.0.2
+# Compatible with: install_odoo.sh v3.0.3
 # Features: Safe detection, Dry-run, Non-interactive, Backup, Full cleanup
 ################################################################################
 set -euo pipefail
@@ -31,7 +31,7 @@ print_banner() {
     echo -e "${BLUE}"
     echo "╔══════════════════════════════════════════════════════════════════╗"
     echo "║         Odoo Instance Deletion Tool - Professional Edition       ║"
-    echo "║                        Version 3.0.2                            ║"
+    echo "║                        Version 3.0.3                            ║"
     echo "╚══════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
@@ -88,7 +88,7 @@ show_help() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Instance Detection
-#  Validates all artifacts created by install_odoo.sh v3.0.2
+#  Validates all artifacts created by install_odoo.sh v3.0.3
 # ─────────────────────────────────────────────────────────────────────────────
 is_odoo_instance() {
     local user="$1"
