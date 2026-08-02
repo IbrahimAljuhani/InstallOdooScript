@@ -1,0 +1,33 @@
+/* ====== إخفاء "Powered by Odoo" (بنيويًا، بدون مطابقة نص قابل للترجمة) ======
+   الفقرة p هي الابن الوحيد المباشر من هذا الـ div في point_of_sale.OrderReceipt الأصلي */
+.pos-receipt-order-data > p {
+    display: none !important;
+}
+
+/* ====== إخفاء QR الأصلي من الهيدر (CSS بدل xpath — استهداف xpath للعنصر
+   ثبت أنه غير موثوق في هذه البيئة ويكسر شاشة الإيصال، راجع order_receipt.xml) ====== */
+.pos-receipt img#qrcode,
+.pos-receipt img.pos-receipt-qrcode,
+img#qrcode.pos-receipt-qrcode {
+    display: none !important;
+    visibility: hidden !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
+}
+
+/* ====== QR Code في الأسفل ====== */
+.zatca-qr-bottom {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 10px;
+}
+
+.zatca-qr-img {
+    width: 100%;
+    max-width: 300px;
+    height: auto;
+    aspect-ratio: 1 / 1;
+    display: block;
+    image-rendering: crisp-edges;
+}
