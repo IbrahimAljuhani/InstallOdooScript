@@ -3,7 +3,7 @@
 [![Ubuntu 22.04+](https://img.shields.io/badge/Ubuntu-22.04%2B-333333?logo=ubuntu)](https://ubuntu.com/)
 [![Odoo 17–19](https://img.shields.io/badge/Odoo-17.0%20|%2018.0%20|%2019.0-00A09D?logo=odoo)](https://www.odoo.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-3.0.2-blueviolet)](#)
+[![Version](https://img.shields.io/badge/Version-3.0.3-blueviolet)](#)
 [![Production Ready](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)](#)
 
 > **Production-grade Bash toolkit** to install, manage, and safely remove multiple isolated Odoo instances on Ubuntu servers — engineered for DevOps teams and enterprise environments.
@@ -33,8 +33,8 @@ Unlike basic installation scripts, this toolkit implements **professional DevOps
 
 | Script | Version | Purpose | Key Features |
 |--------|---------|---------|--------------|
-| `install_odoo.sh` | v3.0.2 | Install new instances | Interactive wizard, non-interactive mode, dry-run, optional wkhtmltopdf, optional queue_job, Cloudflare DNS verification, strict instance-safety checks, manifest generation, master password terminal display |
-| `delete_odoo.sh` | v3.0.2 | Safely remove instances | 4-artifact validation, smart backup, Nginx cache cleanup, WebSocket map cleanup, no `eval` |
+| `install_odoo.sh` | v3.0.3 | Install new instances | Interactive wizard, non-interactive mode, dry-run, optional wkhtmltopdf, optional queue_job, Cloudflare DNS verification, strict instance-safety checks, manifest generation, master password terminal display |
+| `delete_odoo.sh` | v3.0.3 | Safely remove instances | 4-artifact validation, smart backup, Nginx cache cleanup, WebSocket map cleanup, no `eval` |
 
 ---
 
